@@ -55,6 +55,9 @@ class DkBleManager(base: Context) : DkTransport {
 
     enum class State { IDLE, SCANNING, CONNECTING, CONNECTED, SESSION_READY, ERROR }
 
+    /** Recovery after a GATT link drop; decided by [dropRecovery]. */
+    internal enum class DropRecovery { IDLE, RECONNECT_CACHED, RESCAN, FAIL }
+
     private val _state = MutableStateFlow(State.IDLE)
     val state: StateFlow<State> = _state
     @Volatile var lastError: String? = null; private set
@@ -211,6 +214,8 @@ class DkBleManager(base: Context) : DkTransport {
     // marks a teardown WE initiated (forceReconnect/watch handover) so we don't fight the caller.
     @Volatile private var deliberate = false
     private var setupRetries = 0
+    // When the current connectGatt attempt started; tells a dead-address timeout from a fast stack error.
+    @Volatile private var connectStartedMs = 0L
 
     // ---- scan state ----
     private var scanCb: ScanCallback? = null
@@ -246,8 +251,13 @@ class DkBleManager(base: Context) : DkTransport {
     /** Clear the handshake-failure backoff so an explicit user connect isn't delayed. */
     fun resetHandshakeBackoff() { handshakeFailStreak = 0; handshakeBackoffUntilMs = 0L }
 
+    /**
+     * @param filtered scan with the hardware [carScanFilters] instead of unfiltered. Use it when the
+     *   screen may be off (presence wake, re-scan after a dead connect): Android refuses UNFILTERED scans
+     *   screen-off, while the car is known to match the filters (that's how presence fired).
+     */
     @SuppressLint("MissingPermission")
-    fun connect(deviceMac: String?) {
+    fun connect(deviceMac: String?, filtered: Boolean = false) {
         if (inHandshakeBackoff()) return
         // Idempotent: a second connect() while we're already scanning/connecting/connected
         // would start a *new* scan on the shared scanner — which resets state to SCANNING and
@@ -279,7 +289,7 @@ class DkBleManager(base: Context) : DkTransport {
                 // FIRST_MATCH fired, but the follow-up batched connect timed out at 20s every time).
                 // Batching was only ever to avoid a per-advert log firehose, and the 0xFDFD/0x06FE
                 // FILTER already solves that (only the car matches). So: immediate everywhere.
-                startScan(a, useBatching = false)
+                startScan(a, useBatching = false, filtered = filtered)
             }
         } catch (e: SecurityException) {
             fail("missing Bluetooth permission (grant BLUETOOTH_SCAN/CONNECT): ${e.message}")
@@ -326,9 +336,16 @@ class DkBleManager(base: Context) : DkTransport {
      *
      * Race-safe: a link that's already CONNECTING/CONNECTED/SESSION_READY is left untouched (never tear
      * down a healthy GATT, never open a second client - [connectDevice] also hard-dedupes on that).
+     *
+     * The cached device is reused ONLY while the car still advertises from that address (it is among
+     * [seenMacs], every advertiser in the presence result; [mac] is the strongest). The car rotates its
+     * Resolvable Private Address, so after a long absence the cached address is dead: a direct connect
+     * to it just times out (~30 s per attempt) while the user stands at the car. Then we run a FILTERED
+     * scan-connect instead (screen-off legal), which captures the car's current device +
+     * broadcast-random from a live ScanResult.
      */
     @SuppressLint("MissingPermission")
-    fun engageFromPresence(mac: String?) {
+    fun engageFromPresence(mac: String?, seenMacs: Collection<String> = listOfNotNull(mac)) {
         when (_state.value) {
             // Already bringing a link up or holding one: this FIRST_MATCH is redundant. Don't preempt a
             // connect that's already in flight and don't tear down a live GATT.
@@ -346,14 +363,20 @@ class DkBleManager(base: Context) : DkTransport {
             }
             else -> {}  // IDLE/ERROR: nothing to preempt - connect normally below
         }
-        // Prefer the scan-free path: the cached BluetoothDevice keeps the RANDOM address type (a raw
-        // getRemoteDevice(mac) is treated as PUBLIC and times out) and its broadcast-random still
-        // derives the DK connect-confirm. Fall back to a fresh scan-connect if there's no cached device.
-        if (!reconnectLast()) runCatching { connect(null) }
+        // Prefer the scan-free path while it is still valid: the cached BluetoothDevice keeps the RANDOM
+        // address type (a raw getRemoteDevice(mac) is treated as PUBLIC and times out) and its
+        // broadcast-random still derives the DK connect-confirm.
+        val cached = lastDevice?.address
+        if (canReuseCachedDevice(cached, seenMacs)) {
+            if (reconnectLast()) return
+        } else if (cached != null) {
+            Logx.d("ble", "presence: cached $cached not among $seenMacs - address rotated, fresh filtered scan")
+        }
+        runCatching { connect(null, filtered = true) }
     }
 
     @SuppressLint("MissingPermission")
-    private fun startScan(a: BluetoothAdapter, useBatching: Boolean = true) {
+    private fun startScan(a: BluetoothAdapter, useBatching: Boolean = true, filtered: Boolean = false) {
         val scanner = a.bluetoothLeScanner ?: run { fail("no LE scanner"); return }
         _state.value = State.SCANNING
         seenAdvertisers.clear()
@@ -445,19 +468,21 @@ class DkBleManager(base: Context) : DkTransport {
                 stopScanInternal(scanner)
                 if (useBatching && errorCode == ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED) {
                     Logx.d("ble", "batched scan unsupported — retrying with immediate delivery")
-                    startScan(a, useBatching = false)
+                    startScan(a, useBatching = false, filtered = filtered)
                 } else fail("scan failed: $errorCode")
             }
         }
         scanCb = cb
-        Logx.d("ble", "scanning (UNFILTERED, ${if (useBatching) "batched ${REPORT_DELAY_MS}ms" else "immediate"}) " +
+        Logx.d("ble", "scanning (${if (filtered) "FILTERED 0xFDFD/0x06FE" else "UNFILTERED"}, " +
+            "${if (useBatching) "batched ${REPORT_DELAY_MS}ms" else "immediate"}) " +
             "- match by name *zeekr*, adv-uuid 0xFDFD, DK service ${DkProtocol.SERVICE_UUID}, svcData or mfr 0x06FE. " +
             "Every advertiser is logged so a car with different adv identifiers is still visible.")
-        // Foreground connect: scan UNFILTERED and match in software (see handleAdvert). The hardware
-        // 0xFDFD/0x06FE ScanFilter is kept ONLY for the offloaded background presence scan; on the
-        // foreground connect it risked hiding (and never logging) a car whose region/firmware
-        // advertises different identifiers - the "no DK device matched, nothing in the advert log" case.
-        scanner.startScan(null, settings, cb)
+        // Foreground connect: scan UNFILTERED and match in software (see handleAdvert). On the foreground
+        // connect the hardware 0xFDFD/0x06FE ScanFilter risked hiding (and never logging) a car whose
+        // region/firmware advertises different identifiers - the "no DK device matched, nothing in the
+        // advert log" case. It's used only where the car is KNOWN to match it (presence wake / re-scan),
+        // because those can run screen-off, where Android refuses an unfiltered scan.
+        scanner.startScan(if (filtered) carScanFilters() else null, settings, cb)
         scanJob = scope.launch {
             delay(SCAN_TIMEOUT_MS)
             if (_state.value == State.SCANNING) {
@@ -593,6 +618,7 @@ class DkBleManager(base: Context) : DkTransport {
         }
         deliberate = false // a fresh connect attempt; a drop from here is unexpected → eligible for retry
         Logx.d("ble", "connectGatt ${device.address}")
+        connectStartedMs = System.currentTimeMillis()
         gatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
@@ -609,6 +635,13 @@ class DkBleManager(base: Context) : DkTransport {
         deliberate = true // WE tore it down — the DISCONNECTED callback must not auto-retry
         adapter?.bluetoothLeScanner?.let { runCatching { stopScanInternal(it) } }
         abortSetup()
+        closeLink()
+        _state.value = State.IDLE
+    }
+
+    /** Close the current GATT client and clear every per-link field. Leaves [state] and [setupJob] alone. */
+    @SuppressLint("MissingPermission")
+    private fun closeLink() {
         // reset() (not close()) so the transport's inbound handler stays wired and a later
         // connect() on this reused session can re-handshake. close() would unwire it.
         (session as? RealDkSession)?.reset()
@@ -617,7 +650,20 @@ class DkBleManager(base: Context) : DkTransport {
         chWrite1 = null; chWrite2 = null; chNotify1 = null; chNotify2 = null
         reasm1.reset(); reasm2.reset()
         lastRemoteRssi = null; rssiReadPending = false
-        _state.value = State.IDLE
+    }
+
+    /**
+     * Fail a setup step on a LIVE link, and close that link. [fail] alone left the GATT client open, and
+     * [connectDevice] ignores a new connect while one exists - so every reconnect (presence wake,
+     * keep-alive, unlock retry) sat in CONNECTING until the car itself happened to drop the old link.
+     * Called from the GATT callback / [setupJob], so it must not cancel [setupJob] (no [abortSetup]).
+     */
+    private fun failAndClose(g: BluetoothGatt, msg: String) {
+        if (gatt === g) {
+            deliberate = true // our teardown: a late DISCONNECTED callback must not auto-retry
+            closeLink()
+        }
+        fail(msg)
     }
 
     /**
@@ -664,19 +710,32 @@ class DkBleManager(base: Context) : DkTransport {
                 reasm1.reset(); reasm2.reset()
                 lastRemoteRssi = null; rssiReadPending = false
                 val wasReady = _state.value == State.SESSION_READY
+                // Still CONNECTING after the stack's connect timeout = the address never answered: typically
+                // a direct connect to an address the car has since rotated away from. (A fast failure such
+                // as an immediate status 133 is a transient stack error; the cached device stays valid.)
+                val connectTimedOut = _state.value == State.CONNECTING &&
+                    System.currentTimeMillis() - connectStartedMs >= DEAD_ADDRESS_MS
                 runCatching { g.close() }
                 gatt = null
-                when {
-                    wasReady -> _state.value = State.IDLE   // ready-link drop: liveness/keep-alive decides
+                when (dropRecovery(wasReady, connectTimedOut, deliberate, lastDevice != null, setupRetries, MAX_SETUP_RETRIES)) {
+                    DropRecovery.IDLE -> _state.value = State.IDLE   // ready-link drop: liveness/keep-alive decides
                     // Unexpected mid-setup drop (status 19, car/stack contention) with a known device:
                     // retry FAST via reconnectLast instead of the ~20 s offloaded presence scan.
-                    !deliberate && lastDevice != null && setupRetries < MAX_SETUP_RETRIES -> {
+                    DropRecovery.RECONNECT_CACHED -> {
                         setupRetries++
                         _state.value = State.IDLE // reconnectLast requires a resting state
                         Logx.w("ble", "setup drop (status=$status) — fast reconnectLast retry #$setupRetries/$MAX_SETUP_RETRIES")
                         scope.launch { delay(SETUP_RETRY_DELAY_MS); reconnectLast() }
                     }
-                    else -> { setupRetries = 0; fail("disconnected (status=$status)") }
+                    // The connect timed out: retrying the same (likely rotated) address would just time out
+                    // again, so re-scan (filtered: screen-off legal) for the car's current address.
+                    DropRecovery.RESCAN -> {
+                        setupRetries++
+                        _state.value = State.IDLE // connect requires a resting state
+                        Logx.w("ble", "connect timed out (status=$status) — re-scan for the car's current address #$setupRetries/$MAX_SETUP_RETRIES")
+                        scope.launch { delay(SETUP_RETRY_DELAY_MS); connect(null, filtered = true) }
+                    }
+                    DropRecovery.FAIL -> { setupRetries = 0; fail("disconnected (status=$status)") }
                 }
             }
         }
@@ -690,14 +749,14 @@ class DkBleManager(base: Context) : DkTransport {
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val svc = g.getService(UUID.fromString(DkProtocol.SERVICE_UUID)) ?: run { fail("DK service not found"); return }
+            val svc = g.getService(UUID.fromString(DkProtocol.SERVICE_UUID)) ?: run { failAndClose(g, "DK service not found"); return }
             chWrite1 = svc.getCharacteristic(UUID.fromString(DkProtocol.CHAR_CH1_WRITE))
             chNotify1 = svc.getCharacteristic(UUID.fromString(DkProtocol.CHAR_CH1_NOTIFY))
             chWrite2 = svc.getCharacteristic(UUID.fromString(DkProtocol.CHAR_CH2_WRITE))
             chNotify2 = svc.getCharacteristic(UUID.fromString(DkProtocol.CHAR_CH2_NOTIFY))
             Logx.d("ble", "services discovered: ch1w=${chWrite1 != null} ch1n=${chNotify1 != null} " +
                 "ch2w=${chWrite2 != null} ch2n=${chNotify2 != null}")
-            if (chWrite1 == null || chNotify1 == null) { fail("DK characteristics missing"); return }
+            if (chWrite1 == null || chNotify1 == null) { failAndClose(g, "DK characteristics missing"); return }
             setupJob = scope.launch { setupNotificationsAndEstablish(g) }
         }
 
@@ -732,7 +791,7 @@ class DkBleManager(base: Context) : DkTransport {
         // makes Android re-attempt pairing on every reconnect = the constant buzz. Safe: the DK handshake is
         // app-layer and needs no link bond, and no calibration bond exists this early in setup.
         runCatching { clearBond(g.device, "connect cleanup") }
-        if (!enableNotify(g, chNotify1!!)) { fail("enable notify 2A11 failed"); return }
+        if (!enableNotify(g, chNotify1!!)) { failAndClose(g, "enable notify 2A11 failed"); return }
         chNotify2?.let { if (!enableNotify(g, it)) Log.w(TAG, "enable notify 2A13 failed (continuing)") }
         // Bail if the link dropped during notify setup — never run the handshake on a dead GATT
         // (this is the "write failed for 0x0101" after a mid-setup status-19 drop).
@@ -773,7 +832,16 @@ class DkBleManager(base: Context) : DkTransport {
                 handshakeBackoffUntilMs = System.currentTimeMillis() + backoff
                 Logx.w("ble", "DK handshake failed ${handshakeFailStreak}x - backing off auto-reconnect ${backoff / 1000}s")
             }
-            fail("DK handshake: ${e.message}")
+            val ownLink = gatt === g
+            failAndClose(g, "DK handshake: ${e.message}")
+            // We closed the link ourselves, so no DISCONNECTED callback follows - and with it the fast setup
+            // retry that used to run once the car dropped a failed link. Keep that quick retry on the same
+            // car, within the setup-retry budget and never while backing off.
+            if (ownLink && handshakeBackoffUntilMs <= System.currentTimeMillis() && setupRetries < MAX_SETUP_RETRIES) {
+                setupRetries++
+                Logx.w("ble", "handshake failed — fast reconnectLast retry #$setupRetries/$MAX_SETUP_RETRIES")
+                scope.launch { delay(SETUP_RETRY_DELAY_MS); reconnectLast() }
+            }
         }
     }
 
@@ -1014,10 +1082,38 @@ class DkBleManager(base: Context) : DkTransport {
         // to beat the ~20 s offloaded presence scan). Exhausted → fall back to the scan path.
         private const val MAX_SETUP_RETRIES = 3
         private const val SETUP_RETRY_DELAY_MS = 900L
+        // A connect still pending after this long ran into the stack's connect timeout (~20-30 s): the
+        // address never answered. Far above an immediate status-133 failure, far below the timeout.
+        private const val DEAD_ADDRESS_MS = 10_000L
         // Auto-reconnect backoff after repeated DK-handshake failures (car won't complete the handshake).
         private const val HANDSHAKE_FAIL_THRESHOLD = 3
         private const val HANDSHAKE_BACKOFF_BASE_MS = 30_000L
         private const val HANDSHAKE_BACKOFF_MAX_MS = 120_000L
+        /** Reuse the cached device on a presence wake only while the car still advertises from it, i.e.
+         *  its address is among the presence results ([seenMacs]; another Zeekr may be the strongest). */
+        internal fun canReuseCachedDevice(cachedMac: String?, seenMacs: Collection<String>): Boolean =
+            cachedMac != null && seenMacs.any { it.equals(cachedMac, ignoreCase = true) }
+
+        /**
+         * What to do when a GATT link drops (see the DISCONNECTED branch of the GATT callback).
+         * [connectTimedOut]: the link never came up and the attempt ran into the stack's connect timeout -
+         * the address is dead (rotated), so retrying the cached device would only time out again.
+         */
+        internal fun dropRecovery(
+            wasReady: Boolean,
+            connectTimedOut: Boolean,
+            deliberate: Boolean,
+            hasCachedDevice: Boolean,
+            retries: Int,
+            maxRetries: Int,
+        ): DropRecovery = when {
+            wasReady -> DropRecovery.IDLE
+            deliberate || retries >= maxRetries -> DropRecovery.FAIL
+            connectTimedOut -> DropRecovery.RESCAN
+            hasCachedDevice -> DropRecovery.RECONNECT_CACHED
+            else -> DropRecovery.FAIL
+        }
+
         @Volatile private var INSTANCE: DkBleManager? = null
         fun get(context: Context): DkBleManager =
             INSTANCE ?: synchronized(this) {

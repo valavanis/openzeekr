@@ -7,6 +7,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayInputStream
 import java.security.KeyPair
@@ -74,6 +76,11 @@ class RealDkSession(
     // How long [control] waits for the optional 0x0112 result after the 0x0111 receipt ack.
     private val RESULT_WINDOW_MS = 600L
 
+    // Serializes every 0x0110 exchange ([ping], [control], [probeControl]). The car's 0x0111/0x0112
+    // replies carry no request id, so with two in flight one command's reply is credited to the other
+    // (e.g. the ping's RPA-start reject read as the unlock's result).
+    private val controlMutex = Mutex()
+
     // DEBUG: when set (during [probeControl]), every decrypted inbound frame is also handed here so
     // the probe can log exactly what the car sends back (opcode + body). Null in normal operation.
     @Volatile private var probeSink: ((Int, ByteArray) -> Unit)? = null
@@ -82,6 +89,13 @@ class RealDkSession(
     @Volatile private var cmacKeyCache: ByteArray? = null
 
     init { transport.onInbound(::onRawInbound) }
+
+    /** Unit-test seam: mark the session established with known GCM keys, skipping the BLE handshake. */
+    @androidx.annotation.VisibleForTesting
+    internal fun primeEstablishedForTest(sKey: ByteArray, iv: ByteArray) {
+        this.sKey = sKey; this.iv = iv
+        cryptoReady = true; isEstablished = true
+    }
 
     // ---------------- handshake ----------------
 
@@ -319,10 +333,19 @@ class RealDkSession(
         return send(cmd, payload)
     }
 
-    override suspend fun ping(timeoutMs: Long): Boolean {
+    override suspend fun ping(timeoutMs: Long): Boolean = controlMutex.withLock { pingExclusive(timeoutMs) }
+
+    private suspend fun pingExclusive(timeoutMs: Long): Boolean {
         if (!isEstablished || !cryptoReady) return false
         val waiter = CompletableDeferred<Int>()
+        // The probe owns its own receipt/result slots and drains them before [controlMutex] is released:
+        // the car answers it with 0x0111 and then a 0x0112 reject, and a reject that outlived the ping
+        // would otherwise be read as the NEXT control's result.
+        val recv = CompletableDeferred<ByteArray>()
+        val result = CompletableDeferred<ByteArray>()
         pingWaiter = waiter
+        pending[DkProtocol.CMD_V2A_CMD_RECEIVED] = recv
+        pending[DkProtocol.CMD_V2A_RESULT] = result
         return try {
             // Liveness via a CONTROL frame the car ALWAYS acks but never acts on: 0x0110 carrying the
             // RPA-start sub-opcode (0x0A). The car replies 0x0111 (received)/0x0112 (result) and
@@ -333,15 +356,22 @@ class RealDkSession(
             if (!ok) { Logx.w("dk", "ping: 0x0110 write failed"); return false }
             val reply = withTimeoutOrNull(timeoutMs) { waiter.await() }
             Logx.d("dk", "ping 0x0110/0x0a -> ${reply?.let { hex(it) } ?: "no reply in ${timeoutMs}ms"}")
+            if (reply != null && withTimeoutOrNull(timeoutMs) { recv.await() } != null) {
+                withTimeoutOrNull(RESULT_WINDOW_MS) { result.await() }
+            }
             reply != null
         } catch (e: Exception) {
             Logx.w("dk", "ping error: ${e.message}"); false
         } finally {
             pingWaiter = null
+            pending.remove(DkProtocol.CMD_V2A_CMD_RECEIVED, recv); pending.remove(DkProtocol.CMD_V2A_RESULT, result)
         }
     }
 
-    override suspend fun control(ctrl: Byte, timeoutMs: Long): ControlResult {
+    override suspend fun control(ctrl: Byte, timeoutMs: Long): ControlResult =
+        controlMutex.withLock { controlExclusive(ctrl, timeoutMs) }
+
+    private suspend fun controlExclusive(ctrl: Byte, timeoutMs: Long): ControlResult {
         if (!isEstablished || !cryptoReady) return ControlResult.WRITE_FAILED
         val recv = CompletableDeferred<ByteArray>()
         val result = CompletableDeferred<ByteArray>()
@@ -370,11 +400,14 @@ class RealDkSession(
         } catch (e: Exception) {
             Logx.w("dk", "control error: ${e.message}"); ControlResult.WRITE_FAILED
         } finally {
-            pending.remove(DkProtocol.CMD_V2A_CMD_RECEIVED); pending.remove(DkProtocol.CMD_V2A_RESULT)
+            pending.remove(DkProtocol.CMD_V2A_CMD_RECEIVED, recv); pending.remove(DkProtocol.CMD_V2A_RESULT, result)
         }
     }
 
-    override suspend fun probeControl(ctrl: Byte, windowMs: Long): String {
+    override suspend fun probeControl(ctrl: Byte, windowMs: Long): String =
+        controlMutex.withLock { probeExclusive(ctrl, windowMs) }
+
+    private suspend fun probeExclusive(ctrl: Byte, windowMs: Long): String {
         if (!isEstablished || !cryptoReady) return "session not ready"
         val seen = java.util.Collections.synchronizedList(mutableListOf<String>())
         probeSink = { cmd, body ->

@@ -70,6 +70,7 @@ class ProximityService : Service() {
         when (intent?.action) {
             ACTION_PRESENT -> {
                 val mac = intent.getStringExtra(EXTRA_MAC)
+                val seenMacs = intent.getStringArrayListExtra(EXTRA_SEEN_MACS) ?: listOfNotNull(mac)
                 // NOTE: do NOT connect(mac) directly. The car advertises a Resolvable Private
                 // Address, so the MAC from the offloaded result is a RANDOM address; a direct
                 // getRemoteDevice(mac).connectGatt treats it as PUBLIC and times out (status=147).
@@ -78,9 +79,10 @@ class ProximityService : Service() {
                 Logx.d("svc", "presence: car in range (saw $mac) — engaging via scan-connect")
                 deps.ble.disarmPresenceScan()
                 // engageFromPresence (not connect): the offloaded match is authoritative, so it can
-                // PREEMPT a stuck screen-off active scan and connect straight to the cached device -
-                // otherwise connect() bails with "already SCANNING" and this match is dropped.
-                runCatching { deps.ble.engageFromPresence(mac) } // wakelock follows state via manageWakeLock
+                // PREEMPT a stuck screen-off active scan and connect straight to the cached device (while
+                // the car still advertises from it; else a filtered scan-connect) - otherwise connect()
+                // bails with "already SCANNING" and this match is dropped.
+                runCatching { deps.ble.engageFromPresence(mac, seenMacs) } // wakelock follows state via manageWakeLock
             }
             ACTION_ABSENT -> {
                 // MATCH_LOST — the offloaded scan lost the car. Nothing to do: manageWakeLock releases
@@ -339,6 +341,7 @@ class ProximityService : Service() {
         /** BleScanReceiver → service: the car's advert left range (MATCH_LOST) or offload dropped. */
         const val ACTION_ABSENT = "com.openzeekr.app.ble.PROX_ABSENT"
         const val EXTRA_MAC = "mac"
+        const val EXTRA_SEEN_MACS = "seen_macs"
 
         fun start(context: Context) {
             val i = Intent(context, ProximityService::class.java)
@@ -349,11 +352,13 @@ class ProximityService : Service() {
             context.stopService(Intent(context, ProximityService::class.java))
         }
 
-        /** Woken by the offloaded scan: car is nearby — engage (connect + approach). */
-        fun notifyPresent(context: Context, mac: String?) {
+        /** Woken by the offloaded scan: car is nearby — engage (connect + approach). [mac] is the strongest
+         *  matching advertiser, [seenMacs] every one of them. */
+        fun notifyPresent(context: Context, mac: String?, seenMacs: ArrayList<String>) {
             val i = Intent(context, ProximityService::class.java)
                 .setAction(ACTION_PRESENT)
                 .putExtra(EXTRA_MAC, mac)
+                .putStringArrayListExtra(EXTRA_SEEN_MACS, seenMacs)
             runCatching { ContextCompat.startForegroundService(context, i) }
         }
 

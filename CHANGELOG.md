@@ -3,6 +3,24 @@
 All notable changes to OpenZeekr are recorded here. OpenZeekr is a free, non-commercial
 clean-room app and is not affiliated with Zeekr.
 
+## [Unreleased]
+
+### Fixed
+- **Approach unlock that connected but never unlocked.** After a walk-away where the key link dropped
+  quietly (the usual case when you leave the car unlocked by approach), the next approach that connected
+  close to the car stayed latched as "already unlocked this visit" and never unlocked. A confirmed
+  departure now re-arms the next approach.
+- **Long "connecting" when returning to the car.** The car changes its Bluetooth address over time; after
+  a long absence the app kept reconnecting to the old address (about 30 s per attempt, repeatedly) instead
+  of picking up the current one. It now reconnects to the car's current address straight away.
+- **Unlock read as rejected at the door.** The background link check and the unlock could overlap, and
+  the check's answer was taken as the unlock's, so a good unlock looked rejected and the link was
+  rebuilt before retrying. They no longer overlap.
+- **Stuck in "connecting" after a failed key handshake.** A failed handshake now closes the link, so the
+  next attempt can start instead of waiting for the car to drop it.
+- **Unlock tapped while the key is connecting** now waits a few seconds for the key instead of going
+  straight to the slower cloud command.
+
 ## [0.2] - 2026-10-02
 
 ### Added

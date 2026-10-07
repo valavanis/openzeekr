@@ -6,6 +6,8 @@ import com.openzeekr.app.ble.DkProtocol
 import com.openzeekr.app.net.model.RemoteControlResponse
 import com.openzeekr.app.net.model.ServiceParameter
 import com.openzeekr.app.util.Logx
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * BLE-first, cloud-fallback command dispatcher.
@@ -50,6 +52,13 @@ class VehicleControl(
         extraParams: List<ServiceParameter> = emptyList(),
     ): CallResult<RemoteControlResponse> {
         val b = bleByte(cmd)
+        // The key link is coming up right now (the car is in range, handshake in progress): give it a
+        // moment instead of sending a BLE-capable command to the cloud, which is slower and fails outright
+        // where the car has no signal (garage). Tapping Unlock while the pill says "connecting" hit this.
+        if (b != null && extraParams.isEmpty() && ble.state.value in SESSION_COMING_UP) {
+            Logx.d("ctl", "${cmd.name}: key session coming up (${ble.state.value}) — waiting up to ${SESSION_WAIT_MS}ms")
+            withTimeoutOrNull(SESSION_WAIT_MS) { ble.state.first { it !in SESSION_COMING_UP } }
+        }
         // BLE path: only when a byte is mapped AND the key session is up. extraParams (temperature,
         // SOC, …) have no BLE representation, so a command carrying them always goes cloud.
         if (b != null && extraParams.isEmpty() && ble.state.value == DkBleManager.State.SESSION_READY) {
@@ -65,5 +74,9 @@ class VehicleControl(
 
     companion object {
         private const val BLE_ACK_TIMEOUT_MS = 1_500L
+        /** Link states where the car is in range and the key session is being set up. */
+        private val SESSION_COMING_UP = setOf(DkBleManager.State.CONNECTING, DkBleManager.State.CONNECTED)
+        /** How long a BLE-capable command waits for a session that is coming up before going cloud. */
+        private const val SESSION_WAIT_MS = 8_000L
     }
 }

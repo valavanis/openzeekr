@@ -92,11 +92,12 @@ class ProximityController(
     private var armedUnlocked = false
     // Confirmed-unlock retry loop: true while actively trying to unlock; the job is the loop itself.
     @Volatile private var needToUnlock = false
-    // True once we've acted on an arrival (fired the unlock) since the last time we were clearly FAR.
-    // Lets a session that comes up ALREADY near the car fire once (the FAR->NEAR crossing is missed when
-    // the phone is near before SESSION_READY, since zone latches to NEAR while we wait for the handshake).
-    // Reset when we go FAR, so a walk-away-then-return re-arms.
-    private var arrivalActed = false
+    // Once-per-visit arrival latch (see [ArrivalLatch]). Lets a session that comes up ALREADY near the car
+    // fire once (the FAR->NEAR crossing is missed when the phone is near before SESSION_READY, since zone
+    // latches to NEAR while we wait for the handshake). Re-armed once the user has demonstrably left.
+    private val arrival = ArrivalLatch()
+    // Rate limit for the "approach-unlock held" diagnostic, so a NEAR stand-still doesn't flood the log.
+    private var lastHeldLogMs = 0L
     private var unlockJob: Job? = null
     // Confirmed-lock loop (walk-away). Locking matters more than unlocking — never leave the car open —
     // so this is at least as persistent as unlock and falls back to a cloud lock if BLE won't confirm.
@@ -147,7 +148,7 @@ class ProximityController(
         // reset so a fresh monitor starts from a known state.
         armedUnlocked = false
         needToUnlock = false; unlockJob?.cancel(); unlockJob = null
-        arrivalActed = false
+        arrival.reset(); lastHeldLogMs = 0L
         farAsleep = false; nearRefDist = null; nearStillSinceMs = 0L
         farApproachDeadline = 0L; farApproachRefDist = Double.MAX_VALUE
         _wakeLockNeeded.value = true   // hold until the first sample decides (bring-up needs the CPU)
@@ -254,9 +255,15 @@ class ProximityController(
         } else if (walkAwayArmed && now - linkLostAtMs >= LINK_LOSS_LOCK_DELAY_MS) {
             walkAwayArmed = false
             armedUnlocked = false
-            arrivalActed = false
+            arrival.onLeft()
             Logx.d("prox", "walk-away confirmed (link down ${LINK_LOSS_LOCK_DELAY_MS}ms) -> lock")
             startLockLoop("walk-away-lock (link down)")
+        }
+        // The idle-watch already locked on a SILENT link (armedWatch cleared armedUnlocked itself, so the
+        // walk-away branch above can't run). A link that stays down confirms the departure: re-arm the
+        // arrival, or the next session that comes up already near the car would never unlock.
+        if (linkLostAtMs != 0L && arrival.onLinkDown(now - linkLostAtMs, LINK_LOSS_LOCK_DELAY_MS)) {
+            Logx.d("prox", "silent walk-away confirmed (link down ${LINK_LOSS_LOCK_DELAY_MS}ms) -> next approach re-armed")
         }
         // No live session: never sleep-until-motion here (the sensor can't feed us RSSI). Hold the CPU
         // while a walk-away lock is pending OR while you're MOVING — a drop while walking up needs the CPU
@@ -290,6 +297,9 @@ class ProximityController(
             if (rssi == null || rssi <= store.current().sensitivityLockRssi) {
                 Logx.d("prox", "armed idle safety-check rssi=$rssi -> far, locking")
                 armedUnlocked = false
+                // This IS a walk-away decision, so the arrival latch must follow it: a real FAR reading
+                // re-arms now; a silent link re-arms once the drop is confirmed (onSessionDown).
+                if (rssi != null) arrival.onLeft() else arrival.onSilentWalkAway()
                 startLockLoop("idle-far-lock")
             }
             return
@@ -333,6 +343,10 @@ class ProximityController(
             phase = Phase.MONITORING, source = Source.GATT,
             rawRssi = rssi, smoothedRssi = smoothed, distanceM = dist, zone = zone, error = null,
         )
+        // Feed the arrival latch BEFORE the cooldown / not-ready early returns below: a reading is a reading
+        // even mid-handshake, and a FAR one seen while the session comes up must still re-arm the arrival.
+        if (smoothed <= lockThresh) arrival.onLeft()      // clearly FAR: the next NEAR is a new arrival
+        else if (zone == Zone.NEAR) arrival.onNear()      // at the car: a pending silent walk-away was a glitch
 
         val now = System.currentTimeMillis()
 
@@ -421,20 +435,27 @@ class ProximityController(
         if (ble.state.value != DkBleManager.State.SESSION_READY) return
 
         // UNLOCK on ARRIVAL: near enough, and either a clean FAR->NEAR crossing OR the first time we're
-        // NEAR-while-ready this approach ([arrivalActed] is false until we act, reset when we go FAR). The
-        // plain `prevZone != NEAR` crossing MISSED "woke/connected AT the car": the zone latches to NEAR on
-        // the first sample - often before SESSION_READY - so by the time the handshake is up prevZone is
-        // already NEAR and no crossing is seen. [arrivalActed] + the armedUnlocked/needToUnlock latches
-        // still guarantee a single unlock per approach (reconnects while parked won't re-fire).
-        if (!armedUnlocked && !needToUnlock && smoothed >= unlockThresh && (prevZone != Zone.NEAR || !arrivalActed)) {
-            arrivalActed = true
-            needToUnlock = true
-            Logx.d("prox", "approach-unlock ARM (rssi=$smoothed ~${"%.1f".format(dist)}m prevZone=$prevZone) — confirmed-unlock loop")
-            startUnlockLoop()
-            return
+        // NEAR-while-ready this visit ([arrival] latch, re-armed once the user has left). The plain
+        // `prevZone != NEAR` crossing MISSED "woke/connected AT the car": the zone latches to NEAR on the
+        // first sample - often before SESSION_READY - so by the time the handshake is up prevZone is
+        // already NEAR and no crossing is seen. The latch + the armedUnlocked/needToUnlock latches still
+        // guarantee a single unlock per approach (reconnects while parked won't re-fire). Never start while
+        // a walk-away lock loop is still running: the two loops would fight over the link.
+        if (!armedUnlocked && !needToUnlock && smoothed >= unlockThresh) {
+            val lockRunning = lockJob?.isActive == true
+            if (!lockRunning && arrival.mayFire(prevZone)) {
+                arrival.onFired()
+                needToUnlock = true
+                Logx.d("prox", "approach-unlock ARM (rssi=$smoothed ~${"%.1f".format(dist)}m prevZone=$prevZone) — confirmed-unlock loop")
+                startUnlockLoop()
+                return
+            }
+            if (now - lastHeldLogMs >= HELD_LOG_INTERVAL_MS) {
+                lastHeldLogMs = now
+                Logx.d("prox", "approach-unlock held (rssi=$smoothed prevZone=$prevZone): " +
+                    if (lockRunning) "a walk-away lock is still running" else "already fired this visit — re-arms once you are clearly away")
+            }
         }
-        // Re-arm the arrival latch once we're clearly FAR, so a walk-away then walk-back unlocks again.
-        if (smoothed <= lockThresh) arrivalActed = false
         // WALK-AWAY cancels a pending unlock loop — only once we cross to FAR (≤ lockThresh). The NEAR/FAR
         // hysteresis gap is the "smoothing" so it can't flap while you hover at the door; cancelling also
         // stops any stale mid-retry command dead.
@@ -689,6 +710,7 @@ class ProximityController(
 
     companion object {
         private const val ACTION_COOLDOWN_MS = 5_000L
+        private const val HELD_LOG_INTERVAL_MS = 10_000L  // "approach-unlock held" diagnostic rate limit
         private const val NEAR_DIST_M = 6.0              // NEAR/FAR boundary for the state machine
         private const val MONITOR_MID_MS = 800L          // no-session fallback (onSessionDown)
         // NEAR (< 6 m): wakelock held, poll eases with hold-still time. "still" = distance within the band.
