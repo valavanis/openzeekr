@@ -32,7 +32,10 @@ import com.openzeekr.app.ble.ProximityService
 @Composable
 fun AppBootstrap(deps: Deps, serviceEnabled: Boolean) {
     val context = LocalContext.current
-    var foregroundReady by remember { mutableStateOf(hasAll(context, foregroundPerms())) }
+    // Whether the key service MAY start (only BLUETOOTH_CONNECT gates the connectedDevice FGS). Tracked on
+    // its own: keyed on "all permissions granted", denying an unrelated one (notifications, activity
+    // recognition) left the effect below un-rerun, so the key service never started that session.
+    var keyServiceAllowed by remember { mutableStateOf(canStartKeyService(context)) }
 
     // Background location must be requested on its own, after foreground location
     // is granted (Android 10+ hard requirement).
@@ -43,7 +46,7 @@ fun AppBootstrap(deps: Deps, serviceEnabled: Boolean) {
     val foregroundLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        foregroundReady = hasAll(context, foregroundPerms())
+        keyServiceAllowed = canStartKeyService(context)
         maybeRequestBackgroundLocation(context, backgroundLauncher::launch)
     }
 
@@ -64,8 +67,8 @@ fun AppBootstrap(deps: Deps, serviceEnabled: Boolean) {
 
     // Keep the foreground key service running exactly while logged-in + provisioned,
     // but only once the connectedDevice FGS is actually allowed to start.
-    LaunchedEffect(serviceEnabled, foregroundReady) {
-        if (serviceEnabled && canStartKeyService(context)) ProximityService.start(context)
+    LaunchedEffect(serviceEnabled, keyServiceAllowed) {
+        if (serviceEnabled && keyServiceAllowed) ProximityService.start(context)
         else if (!serviceEnabled) ProximityService.stop(context)
     }
 }
@@ -90,10 +93,6 @@ private fun foregroundPerms(): List<String> = buildList {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         add(Manifest.permission.ACTIVITY_RECOGNITION)
     }
-}
-
-private fun hasAll(context: Context, perms: List<String>): Boolean = perms.all {
-    ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
 }
 
 private fun maybeRequestBackgroundLocation(context: Context, launch: (String) -> Unit) {

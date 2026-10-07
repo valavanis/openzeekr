@@ -90,7 +90,7 @@ class Deps(context: Context) {
     /** Car-side schedules: off-peak charging windows + departure/booking-travel preconditioning. */
     val schedule = com.openzeekr.app.remote.ScheduleRepository(config, apiClient)
     /** Live vehicle status (foreground poll, no push) — observed by the UI. */
-    val vehicleState = VehicleStatusHolder(control, appScope)
+    val vehicleState = VehicleStatusHolder(control, appScope) { config.current().vin }
     /** Per-VIN supported functions — drives which controls the UI shows. */
     val capabilities = CapabilityHolder(control, appScope)
 
@@ -104,7 +104,7 @@ class Deps(context: Context) {
         if (config.current().deviceIdentifier != id.deviceId) config.update { it.copy(deviceIdentifier = id.deviceId) }
         id.credential()?.let { ble.setCredential(it) }
     }
-    val provisioning = DkProvisioning(config, dkIdentity, ble)
+    val provisioning = DkProvisioning(config, dkIdentity, ble, appScope)
     val lock = DkLockController(ble.session) { ble.refreshSession() }
     val phoneStatus = PhoneStatusProvider(appCtx)
     val rpa = RpaController(ble.session, appScope, phoneStatus::stateByte, rssi = ble::pollRemoteRssi)

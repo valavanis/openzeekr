@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -98,8 +99,10 @@ fun navigateToCar(context: Context, lat: Double, lng: Double, label: String = "M
 @Composable
 fun CarLocationSection(deps: Deps, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
-    var pos by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-    LaunchedEffect(Unit) {
+    // Keyed on the active car: after a switch, "Navigate to car" must route to the NEW car, not the old one.
+    val vin = deps.config.config.collectAsState().value.vin
+    var pos by remember(vin) { mutableStateOf<Pair<Double, Double>?>(null) }
+    LaunchedEffect(vin) {
         when (val r = deps.control.status()) {
             is CallResult.Ok -> {
                 val p = r.value.basicVehicleStatus?.position

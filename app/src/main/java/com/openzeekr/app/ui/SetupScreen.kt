@@ -108,10 +108,10 @@ fun SetupScreen(
         if (result.values.all { it }) { ble.resetHandshakeBackoff(); ble.connect(null) } else snackbar("Bluetooth permission denied — enable it in system settings")
     }
     fun connect() { if (hasBlePerms()) ble.connect(null) else permLauncher.launch(blePerms) }
+    // Runs in the app scope (not this screen's): leaving the Key tab mid-run must not abort it.
     fun provision() {
-        scope.launch {
-            provisioning.provision(owner)
-                .onSuccess { snackbar("Digital key provisioned") }
+        provisioning.start(owner) { r ->
+            r.onSuccess { snackbar("Digital key provisioned") }
                 .onFailure { snackbar("Provisioning failed: ${it.message}") }
         }
     }

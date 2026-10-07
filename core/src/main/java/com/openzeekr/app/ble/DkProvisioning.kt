@@ -8,6 +8,7 @@ import com.openzeekr.app.util.Logx
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -38,7 +39,22 @@ class DkProvisioning(
     private val store: ConfigStore,
     private val identity: DkIdentity,
     private val ble: DkBleManager,
+    /** Process-lifetime scope for [start], so a provisioning run outlives the screen that started it. */
+    private val scope: kotlinx.coroutines.CoroutineScope,
 ) {
+    private var runJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Start [provision] in the process-lifetime scope (single-flight: a run already in progress is not
+     * restarted) and report the result to [onResult]. Provisioning is multi-step, changes server state and
+     * retries for many seconds; run from a screen-scoped coroutine it was cancelled by a tab switch, Back
+     * or a rotation half-way (cert created / key bound but not saved), and the retry then hit the
+     * server's "already activated" state.
+     */
+    fun start(owner: Boolean, onResult: (Result<Unit>) -> Unit = {}) {
+        if (runJob?.isActive == true) return
+        runJob = scope.launch { onResult(provision(owner)) }
+    }
     enum class Step { IDLE, CERT, KEY_LIST, BIND, KEY_INFO, DONE, ERROR }
     data class State(val step: Step = Step.IDLE, val message: String? = null)
 

@@ -52,6 +52,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -208,23 +209,29 @@ fun AppRoot(deps: Deps) {
     // screen and after closing the inbox), so an invite that arrives after login still surfaces.
     LaunchedEffect(loggedIn) { deps.refreshInvites() }
 
-    if (showInbox) {
-        InboxScreen(deps, onBack = { showInbox = false; refreshUnread() }, snackbar = snackbar)
-        return
-    }
-
     // Track the selected tab by enum (not index) so filtering the tab list (owner-only Updates) can't
-    // shift indices out from under us.
-    var selectedTab by remember { mutableStateOf(Tab.SETTINGS) }
+    // shift indices out from under us. Declared ABOVE the inbox takeover and saveable, so opening the
+    // inbox or rotating keeps the user's tab; it is auto-picked only when login / key state CHANGES.
+    var selectedTab by rememberSaveable { mutableStateOf(Tab.SETTINGS) }
+    var tabPickedFor by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(loggedIn, provisioned) {
-        selectedTab = when {
-            !loggedIn -> Tab.SETTINGS
-            !provisioned -> Tab.KEY
-            else -> Tab.VEHICLE
+        val key = "$loggedIn/$provisioned"
+        if (tabPickedFor != key) {
+            tabPickedFor = key
+            selectedTab = when {
+                !loggedIn -> Tab.SETTINGS
+                !provisioned -> Tab.KEY
+                else -> Tab.VEHICLE
+            }
         }
     }
     // If the current tab stops being visible (e.g. Updates while on a shared account), fall back.
     LaunchedEffect(tabs) { if (selectedTab !in tabs) selectedTab = Tab.VEHICLE }
+
+    if (showInbox) {
+        InboxScreen(deps, onBack = { showInbox = false; refreshUnread() }, snackbar = snackbar)
+        return
+    }
 
     Scaffold(
         topBar = {

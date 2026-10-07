@@ -178,7 +178,9 @@ private fun Chip(label: String, onClick: () -> Unit) {
 private fun HoldPad(label: String, icon: ImageVector, modifier: Modifier, onHold: () -> Unit, onRelease: () -> Unit) {
     Column(
         modifier.height(100.dp).clip(RoundedCornerShape(16.dp)).background(Brand.accent.copy(alpha = 0.14f))
-            .pointerInput(Unit) { detectTapGestures(onPress = { onHold(); tryAwaitRelease(); onRelease() }) },
+            // Release in `finally`: if the gesture is cancelled (screen left, tab switched, rotation), the
+            // dead-man heartbeat must stop - otherwise the car keeps getting "move" every 500 ms.
+            .pointerInput(Unit) { detectTapGestures(onPress = { onHold(); try { tryAwaitRelease() } finally { onRelease() } }) },
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
     ) {
         Box(Modifier.size(40.dp).clip(CircleShape).background(Brand.accent.copy(alpha = 0.22f)), contentAlignment = Alignment.Center) {

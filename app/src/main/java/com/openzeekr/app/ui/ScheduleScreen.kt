@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -66,23 +67,26 @@ import kotlinx.coroutines.launch
 fun ScheduleScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
+    // Every bit of schedule state below is keyed on the ACTIVE car: after a car switch the previous car's
+    // plan (incl. its timerId / scheduledTime slot) must never be shown, let alone saved to the new car.
+    val vin = deps.config.config.collectAsState().value.vin
 
     // ---- charging schedule state (V1: a single daily window per timerId) ----
-    var chargeEnabled by remember { mutableStateOf(false) }
-    var chargeStart by remember { mutableStateOf("22:00") }
-    var chargeEnd by remember { mutableStateOf("06:00") }
+    var chargeEnabled by remember(vin) { mutableStateOf(false) }
+    var chargeStart by remember(vin) { mutableStateOf("22:00") }
+    var chargeEnd by remember(vin) { mutableStateOf("06:00") }
     // The "charging will continue if the limit isn't reached at end time" option (wire target 1/2).
-    var keepCharging by remember { mutableStateOf(false) }
+    var keepCharging by remember(vin) { mutableStateOf(false) }
     // Reused from the read-back so an edit targets the car's existing plan slot / trigger.
-    var chargeTimerId by remember { mutableStateOf("2") }
-    var chargeScheduledTime by remember { mutableStateOf("") }
-    var chargeLoading by remember { mutableStateOf(true) }
-    var chargeSaving by remember { mutableStateOf(false) }
+    var chargeTimerId by remember(vin) { mutableStateOf("2") }
+    var chargeScheduledTime by remember(vin) { mutableStateOf("") }
+    var chargeLoading by remember(vin) { mutableStateOf(true) }
+    var chargeSaving by remember(vin) { mutableStateOf(false) }
 
     // ---- departure schedule state ----
-    val departures = remember { mutableStateListOf<BookingTravelSetting>() }
-    var depLoading by remember { mutableStateOf(true) }
-    var showAddDeparture by remember { mutableStateOf(false) }
+    val departures = remember(vin) { mutableStateListOf<BookingTravelSetting>() }
+    var depLoading by remember(vin) { mutableStateOf(true) }
+    var showAddDeparture by remember(vin) { mutableStateOf(false) }
 
     suspend fun reloadCharge() {
         chargeLoading = true
@@ -110,7 +114,7 @@ fun ScheduleScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = 
         depLoading = false
     }
 
-    LaunchedEffect(Unit) { reloadCharge(); reloadDepartures() }
+    LaunchedEffect(vin) { reloadCharge(); reloadDepartures() }
 
     Column(
         modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
