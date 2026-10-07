@@ -613,7 +613,7 @@ class RealDkSession(
         // RPA frames append AES-CMAC(cmacKey, ts(4 BE) ‖ tail)[0:6] inside the GCM plaintext.
         val fullTail = if (DkProtocol.needsCmac(cmdId)) tail + DkCrypto.aesCmac6(cmacKey(), tsBytes(ts) + tail) else tail
         val plain = DkPayload.wrap(nSeq, ts, fullTail)
-        Logx.d("dkframe", "-> ${hex(cmdId)} plain(${plain.size})=${hexOf(plain)}")
+        Logx.d("dkframe", "-> ${hex(cmdId)} plain(${plain.size})=${DkFrameLog.plain(cmdId, plain)}")
         val body = if (DkProtocol.isEncrypted(cmdId)) DkCrypto.gcmEncrypt(sKey, iv, plain) else plain
         val frame = DkFrame(cmdId, instTypeFor(cmdId), body).encode()
         return transport.write(cmdId, frame)
@@ -651,7 +651,7 @@ class RealDkSession(
         try {
             // DIAG (frame-diff vs stock): log the exact plaintext we send, so we can byte-compare every
             // handshake/calibration frame against a stock capture and find any clean-room divergence.
-            Logx.d("dkframe", "-> ${hex(cmdId)} plain(${plainBody.size})=${hexOf(plainBody)}")
+            Logx.d("dkframe", "-> ${hex(cmdId)} plain(${plainBody.size})=${DkFrameLog.plain(cmdId, plainBody)}")
             val body = if (encrypt) DkCrypto.gcmEncrypt(sKey, iv, plainBody) else plainBody
             val frame = DkFrame(cmdId, instTypeFor(cmdId), body).encode()
             if (!transport.write(cmdId, frame)) throw IllegalStateException("write failed for cmd ${hex(cmdId)}")
@@ -675,7 +675,7 @@ class RealDkSession(
         }
         // DIAG (frame-diff vs stock): log every inbound frame's plaintext to byte-compare against a stock
         // capture (esp. 0x0102 DK_STATUS, 0x010c DK_VERIFY, and whether/what 0x0138 the car sends us).
-        Logx.d("dkframe", "<- ${hex(cmdId)} plain(${body.size})=${hexOf(body)}")
+        Logx.d("dkframe", "<- ${hex(cmdId)} plain(${body.size})=${DkFrameLog.plain(cmdId, body)}")
         // DIAGNOSTIC: 0x182 is the car's BNCM ranging telemetry (its measurement of THIS phone). It is
         // fire-and-forget (no reply, like stock), but decrypting it with the session key shows what the
         // car actually measures per calibration position - to tell whether the in-cabin finalize fails

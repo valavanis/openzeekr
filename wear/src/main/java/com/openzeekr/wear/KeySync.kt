@@ -2,6 +2,9 @@ package com.openzeekr.wear
 
 import android.content.Context
 import android.util.Log
+import com.google.android.gms.wearable.DataEvent
+import com.google.android.gms.wearable.DataEventBuffer
+import com.google.android.gms.wearable.DataMapItem
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
@@ -21,19 +24,35 @@ class KeySyncService : WearableListenerService() {
     override fun onMessageReceived(event: MessageEvent) {
         when (event.path) {
             WearKeyProtocol.PATH_KEY -> importKey(event)
-            WearKeyProtocol.PATH_PURGE -> {
-                Log.i(TAG, "watch purging cached key (phone removed / signed out)")
-                DkIdentity.get(this).wipeAll()
-                runCatching { com.openzeekr.app.ble.DkBleManager.get(this).disconnect() }
-                WearKeyState.status.value = "Key removed on phone"
-                WearKeyState.refresh(this)
-            }
+            WearKeyProtocol.PATH_PURGE -> purge("phone removed the key / signed out")
             WearKeyProtocol.PATH_STATUS -> {
                 val m = runCatching { Json.decodeFromString<Map<String, String>>(String(event.data, Charsets.UTF_8)) }.getOrNull()
                 PhoneLink.onStatus(connected = m?.get("connected") == "1", prox = m?.get("prox") == "1")
             }
             WearKeyProtocol.PATH_PAUSED -> PhoneLink.onPaused()
         }
+    }
+
+    /**
+     * The phone's durable key state, synced whenever the watch reconnects: drop our copy if it is not the
+     * phone's current key. This is what reaches a watch that was off or out of range at Remove key /
+     * sign-out, when the one-shot purge message could not.
+     */
+    override fun onDataChanged(events: DataEventBuffer) {
+        events.forEach { e ->
+            if (e.type != DataEvent.TYPE_CHANGED || e.dataItem.uri.path != WearKeyProtocol.PATH_KEY_STATE) return@forEach
+            val phoneDkId = DataMapItem.fromDataItem(e.dataItem).dataMap.getString(WearKeyProtocol.KEY_STATE_DKID, "")
+            val watchDkId = runCatching { DkIdentity.get(this).credential()?.dkId }.getOrNull()
+            if (WearKeyProtocol.watchMustPurge(watchDkId, phoneDkId)) purge("not the phone's current key")
+        }
+    }
+
+    private fun purge(reason: String) {
+        Log.i(TAG, "watch purging cached key ($reason)")
+        DkIdentity.get(this).wipeAll()
+        runCatching { com.openzeekr.app.ble.DkBleManager.get(this).disconnect() }
+        WearKeyState.status.value = "Key removed on phone"
+        WearKeyState.refresh(this)
     }
 
     private fun importKey(event: MessageEvent) {

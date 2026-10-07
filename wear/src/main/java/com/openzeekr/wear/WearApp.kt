@@ -70,7 +70,10 @@ object WearKeyState {
     fun refresh(context: Context) {
         val id = DkIdentity.get(context)
         val ok = id.isProvisioned
-        if (ok) id.credential()?.let { DkBleManager.get(context).setCredential(it) }
+        val ble = DkBleManager.get(context)
+        // Without a key, also drop the in-memory copy: after a purge it could otherwise still unlock
+        // the car until the watch process died.
+        if (ok) id.credential()?.let { ble.setCredential(it) } else ble.clearCredential()
         provisioned.value = ok
     }
 }

@@ -53,6 +53,11 @@
                 <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
                 <data android:scheme="wear" android:host="*" android:pathPrefix="/openzeekr/" />
             </intent-filter>
+            <!-- The phone's durable key state (revocation reaches a watch that was offline). -->
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
+                <data android:scheme="wear" android:host="*" android:path="/openzeekr/key-state" />
+            </intent-filter>
         </service>
 
         <!-- The watch has no proximity/foreground service; drop the one :core declares. -->

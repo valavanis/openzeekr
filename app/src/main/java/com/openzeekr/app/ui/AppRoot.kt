@@ -100,7 +100,9 @@ fun AppRoot(deps: Deps) {
     val tabs = Tab.entries.filter { it != Tab.UPDATES || cfg.isOwner }
     val prov by deps.provisioning.state.collectAsState()
     val loggedIn = cfg.accessToken.isNotBlank()
-    val provisioned = remember(prov.step) { deps.dkIdentity.isProvisioned } ||
+    // Keyed on the whole state, not just the step: Remove key goes IDLE -> IDLE ("key removed") in a fresh
+    // process, and keying on the step alone kept the stale `true` - the key service kept running.
+    val provisioned = remember(prov) { deps.dkIdentity.isProvisioned } ||
         prov.step == DkProvisioning.Step.DONE
 
     // First run: guided wizard (login → key). Skip straight to the app once done.
@@ -109,7 +111,9 @@ fun AppRoot(deps: Deps) {
         return
     }
 
-    AppBootstrap(deps, serviceEnabled = loggedIn && provisioned)
+    // The key service follows the KEY, not the cloud session: the BLE key works offline, so an expired or
+    // taken-over token (079012/079021) must not stop it. Sign-out removes the key, which stops it.
+    AppBootstrap(deps, serviceEnabled = provisioned)
 
     // Account taken over on another device (TSP 079021): the interceptor already cleared the
     // token (so we're now on the signed-out flow) — just explain why. Mirrors the stock app,

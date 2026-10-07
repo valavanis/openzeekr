@@ -51,11 +51,20 @@ class KickoutInterceptor(private val store: ConfigStore) : Interceptor {
  *  scheme — the TSP interceptors passthrough for it and [OverseasAppAuthInterceptor] signs it. */
 internal fun okhttp3.Request.isOverseasApp(): Boolean = url.encodedPath.startsWith("/overseas-app")
 
+/**
+ * Internal request header that targets a car other than the active one (e.g. the digital key's car for
+ * the walk-away cloud lock). [HeaderInterceptor] turns it into X-VIN and strips it, so it is never sent
+ * and never part of the signed string.
+ */
+const val TARGET_VIN_HEADER = "X-OZ-Target-VIN"
+
 class HeaderInterceptor(private val store: ConfigStore) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         if (chain.request().isOverseasApp()) return chain.proceed(chain.request())
         val cfg = store.current()
         val b = chain.request().newBuilder()
+        val vin = chain.request().header(TARGET_VIN_HEADER) ?: cfg.vin
+        b.removeHeader(TARGET_VIN_HEADER)
 
         // LOGGED_IN_HEADERS base (don't override anything a caller already set).
         // X-DEVICE-ID = app-instance UUID (like stock's ecc8e262-…), NOT the DK deviceId.
@@ -65,8 +74,8 @@ class HeaderInterceptor(private val store: ConfigStore) : Interceptor {
         if (cfg.accessToken.isNotBlank()) b.header("authorization", cfg.accessToken)
         // X-VIN is AES-CBC(vin_key/vin_iv)-encrypted; only send it when we can encrypt
         // it correctly (blank key -> omit rather than send a bad raw value).
-        val sendVin = cfg.vin.isNotBlank() && cfg.vinKey.isNotBlank() && cfg.vinIv.isNotBlank()
-        if (sendVin) b.header("x-vin", VinCrypto.encryptVin(cfg.vin, cfg.vinKey, cfg.vinIv))
+        val sendVin = vin.isNotBlank() && cfg.vinKey.isNotBlank() && cfg.vinIv.isNotBlank()
+        if (sendVin) b.header("x-vin", VinCrypto.encryptVin(vin, cfg.vinKey, cfg.vinIv))
         Logx.d("tsp", "${chain.request().method} ${chain.request().url.encodedPath} " +
             "auth=${if (cfg.accessToken.isNotBlank()) "yes" else "no"} x-vin=${if (sendVin) "yes" else "no"}")
         return chain.proceed(b.build())

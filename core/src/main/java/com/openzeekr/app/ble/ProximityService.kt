@@ -126,6 +126,9 @@ class ProximityService : Service() {
         (application as? DepsHolder)?.deps?.let {
             it.proximity.stop()
             runCatching { it.ble.disarmPresenceScan() }
+            // The service is stopped only on sign-out / key removal: release the car link and its
+            // TX_HIGH positioning beacon too, instead of leaving the session up with nobody owning it.
+            runCatching { it.ble.disconnect() }
         }
         releaseWakeLock()
         scope.cancel()

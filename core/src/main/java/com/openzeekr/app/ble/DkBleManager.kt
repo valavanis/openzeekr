@@ -143,8 +143,15 @@ class DkBleManager(base: Context) : DkTransport {
     /** Provide provisioned key material (from cloud provisioning / import). */
     fun setCredential(cred: DkCredential) { credential = cred }
 
+    /** Forget the key material (Remove key / sign-out), so nothing reconnects with a revoked key. */
+    fun clearCredential() { credential = null }
+
     /** True once a provisioned key is loaded, i.e. a DK session can be established. */
     val hasCredential: Boolean get() = credential != null
+
+    /** VIN of the car the loaded key opens, or null without a key. The BLE session always talks to it,
+     *  whichever car is active in the cloud UI. */
+    val credentialVin: String? get() = credential?.vin
 
     // ---- live RSSI of the connected car (for the RPA proximity gate) ----
     @Volatile private var lastRemoteRssi: Int? = null

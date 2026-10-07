@@ -24,7 +24,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 class VehicleControl(
     private val ble: DkBleManager,
     private val cloud: RemoteControlRepository,
+    /** VIN of the car active in the UI, i.e. the car the user is commanding (and the cloud target). */
+    private val activeVin: () -> String,
 ) {
+    /** The BLE key only ever talks to the car it was provisioned for: use it only for that car. */
+    private fun keyForActiveCar(): Boolean = keyOpensActiveCar(ble.credentialVin, activeVin())
+
     /** DK 0x0110 control byte for a command, or null if it must go via the cloud. */
     private fun bleByte(cmd: Command): Byte? = when (cmd) {
         Command.UNLOCK -> DkProtocol.CTRL_UNLOCK               // 0x01
@@ -45,13 +50,14 @@ class VehicleControl(
 
     /** True if [cmd] can be actuated over BLE right now (mapped byte + live session). */
     fun bleAvailable(cmd: Command): Boolean =
-        bleByte(cmd) != null && ble.state.value == DkBleManager.State.SESSION_READY
+        bleByte(cmd) != null && keyForActiveCar() && ble.state.value == DkBleManager.State.SESSION_READY
 
     suspend fun send(
         cmd: Command,
         extraParams: List<ServiceParameter> = emptyList(),
     ): CallResult<RemoteControlResponse> {
-        val b = bleByte(cmd)
+        // With another car active, the command is for THAT car: never actuate the key's car over BLE.
+        val b = bleByte(cmd)?.takeIf { keyForActiveCar() }
         // The key link is coming up right now (the car is in range, handshake in progress): give it a
         // moment instead of sending a BLE-capable command to the cloud, which is slower and fails outright
         // where the car has no signal (garage). Tapping Unlock while the pill says "connecting" hit this.
@@ -73,6 +79,10 @@ class VehicleControl(
     }
 
     companion object {
+        /** True if the key ([keyVin], null = no key) opens the active car ([activeVin], blank = none yet). */
+        internal fun keyOpensActiveCar(keyVin: String?, activeVin: String): Boolean =
+            keyVin != null && (activeVin.isBlank() || keyVin.equals(activeVin, ignoreCase = true))
+
         private const val BLE_ACK_TIMEOUT_MS = 1_500L
         /** Link states where the car is in range and the key session is being set up. */
         private val SESSION_COMING_UP = setOf(DkBleManager.State.CONNECTING, DkBleManager.State.CONNECTED)

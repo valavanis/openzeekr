@@ -77,12 +77,18 @@ class RemoteControlRepository(private val store: ConfigStore, private val client
     private data class VehicleConfigInfo(val colorName: String, val seriesName: String)
 
     /** Fire a catalog command. Physical-actuation ids (RDU_2/RDL_2/RDO/RDC) route through
-     *  the ecarx device-api transport (System B); everything else through /ms-remote-control. */
-    suspend fun send(cmd: Command, extraParams: List<ServiceParameter> = emptyList()): CallResult<RemoteControlResponse> =
+     *  the ecarx device-api transport (System B); everything else through /ms-remote-control.
+     *  [vin] targets a car other than the active one (null = the active car). */
+    suspend fun send(
+        cmd: Command,
+        extraParams: List<ServiceParameter> = emptyList(),
+        vin: String? = null,
+    ): CallResult<RemoteControlResponse> =
         withContext(Dispatchers.IO) {
             guarded {
                 val cfg = store.current()
-                require(cfg.vin.isNotBlank()) { "VIN not configured" }
+                val targetVin = vin ?: cfg.vin
+                require(targetVin.isNotBlank()) { "VIN not configured" }
                 // The vehicle only executes remote commands for the account's ONLINE
                 // device. Stock heartbeats app/hb continuously; refresh our online
                 // status right before the command so the TSP doesn't reject execution
@@ -92,17 +98,17 @@ class RemoteControlRepository(private val store: ConfigStore, private val client
                     // Charging (limit / start / stop) is its OWN service — ms-charge-manage, NOT
                     // ms-remote-control. Same body shape; different path. Routing RCS through
                     // ms-remote-control was the "charge setting returns error". (Captured 2026-09-16.)
-                    val resp = client.api.sendChargeControl(cmd.toRequest(extraParams = extraParams))
+                    val resp = client.api.sendChargeControl(cmd.toRequest(extraParams = extraParams), vin)
                     resp.data ?: error(resp.message ?: "charge command failed (code=${resp.code})")
                 } else if (cmd.usesSystemB) {
                     // Flat body, PUT /remote-control/vehicle/telematics/{vin}, ecarx success sentinel.
-                    val resp = client.api.ecarxControl(cfg.vin, cmd.toEcarxRequest(cfg.userId, extraParams))
+                    val resp = client.api.ecarxControl(targetVin, cmd.toEcarxRequest(cfg.userId, extraParams))
                     if (!resp.ok) error(resp.message ?: "command failed (code=${resp.code})")
                     resp.data ?: RemoteControlResponse(serviceId = cmd.serviceId, status = "ok")
                 } else {
                     // Body = command/serviceId/setting{serviceParameters,...}; the account is
                     // identified by the bearer token + X-VIN header, not a body field.
-                    val resp = client.api.sendControl(cmd.toRequest(extraParams = extraParams))
+                    val resp = client.api.sendControl(cmd.toRequest(extraParams = extraParams), vin)
                     resp.data ?: error(resp.message ?: "command failed (code=${resp.code})")
                 }
             }
@@ -123,13 +129,14 @@ class RemoteControlRepository(private val store: ConfigStore, private val client
      * A plain GET already returns real data; we heartbeat first (as with [send]) so
      * the cloud has us marked ONLINE and returns a fresh snapshot. VIN rides in the
      * X-VIN header; the query params (latest=false, target=new) mirror the stock app.
+     * [vin] targets a car other than the active one (null = the active car).
      */
-    suspend fun status(): CallResult<VehicleStatusBean> = withContext(Dispatchers.IO) {
+    suspend fun status(vin: String? = null): CallResult<VehicleStatusBean> = withContext(Dispatchers.IO) {
         guarded {
             val cfg = store.current()
-            require(cfg.vin.isNotBlank()) { "VIN not configured" }
+            require((vin ?: cfg.vin).isNotBlank()) { "VIN not configured" }
             runCatching { com.openzeekr.app.net.AccountLogin(store).heartbeat() }
-            val resp = client.api.vehicleStatus()
+            val resp = client.api.vehicleStatus(targetVin = vin)
             val obj = resp.data ?: error(resp.message ?: "status failed (code=${resp.code})")
             // PII-safe: log only the key STRUCTURE (names, never values like VIN/GPS/SOC) so an
             // unexpected shape can be diagnosed. The schema is static across polls, so log it only

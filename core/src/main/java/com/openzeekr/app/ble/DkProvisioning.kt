@@ -337,6 +337,9 @@ class DkProvisioning(
             } else {
                 Logx.w("provision", "remove-one-key skipped (no dkId/account) — local wipe only")
             }
+            // Drop the in-memory copy BEFORE disconnecting: otherwise the keep-alive reconnects with the
+            // removed key (and the car still accepts it whenever the best-effort cloud revoke above failed).
+            ble.clearCredential()
             runCatching { ble.disconnect() }
             identity.wipeAll()
             _state.value = State(Step.IDLE, "key removed")

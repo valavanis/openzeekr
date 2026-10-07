@@ -43,8 +43,9 @@ object Logx {
      *  and cloud-side results: transport, auth, vehicle status, FCM push. */
     private val HTTP_TAGS = setOf("http", "login", "net", "session", "tsp", "push", "status", "fcm")
     /** Areas that belong to the BLE-logging category (gated by [bleOn]) - the DK/BLE session,
-     *  proximity, and control dispatch ("ctl": BLE-first lock/unlock, so it reads next to prox/lock). */
-    private val BLE_TAGS = setOf("ble", "carprox", "dk", "lock", "motion", "provision", "prox", "svc", "ctl")
+     *  proximity, and control dispatch ("ctl": BLE-first lock/unlock, so it reads next to prox/lock).
+     *  "dkframe" (DK frame plaintext) belongs here too, so HTTP-only logging never dumps BLE frames. */
+    private val BLE_TAGS = setOf("ble", "carprox", "dk", "dkframe", "lock", "motion", "provision", "prox", "svc", "ctl")
 
     /** HTTP-category gate, driven by the Settings "HTTP logging" switch; off by default until
      *  config is applied. When OFF, verbose [d] for HTTP areas is suppressed from BOTH logcat and

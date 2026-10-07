@@ -15,6 +15,19 @@ object WearKeyProtocol {
     /** Phone → watch: "the key was removed — purge your cached copy." (Sent on Remove key / sign-out.) */
     const val PATH_PURGE = "/openzeekr/purge-key"
 
+    /**
+     * Phone → watch DataItem: the phone's CURRENT key id ([KEY_STATE_DKID], "" = no key). Unlike the
+     * one-shot [PATH_PURGE] message, a DataItem is durable and synced whenever the watch reconnects, so
+     * a watch that was off or out of range at Remove key / sign-out still drops its copy ([watchMustPurge]).
+     * Carries only the id, never key material.
+     */
+    const val PATH_KEY_STATE = "/openzeekr/key-state"
+    const val KEY_STATE_DKID = "dkId"
+
+    /** True when the watch holds a key ([watchDkId]) that is not the phone's current one ([phoneDkId]). */
+    fun watchMustPurge(watchDkId: String?, phoneDkId: String): Boolean =
+        watchDkId != null && watchDkId != phoneDkId
+
     // ---- BLE-link arbitration (the car allows only ONE peer, so watch and phone can't both
     // hold the DK session; the watch checks with the phone before touching the car) ----
 
