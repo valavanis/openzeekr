@@ -56,21 +56,25 @@ class AccountLogin(private val store: ConfigStore) {
         chain.proceed(chain.request())
     }
 
+    // All three clients derive from one process-wide base, so they SHARE its connection pool and
+    // dispatcher. An AccountLogin is created per heartbeat (every 20-30 s and before every command);
+    // with fresh builders each one opened its own pool - a new TLS handshake every time and idle pools
+    // piling up for their 5-minute keep-alive.
     // user-center client: DEFAULT_HEADERS + X-HMAC-* (key = hmac_access/secret)
-    private val ucClient = OkHttpClient.Builder()
+    private val ucClient = sharedBase.newBuilder()
         .addInterceptor(UcInterceptor())
         .addInterceptor(httpLogGate)
         .addInterceptor(httpLog)
         .build()
     // TSP client: LOGGED_IN_HEADERS + X-SIGNATURE (key = prod_secret) — reuses the app transport
-    private val tspClient = OkHttpClient.Builder()
+    private val tspClient = sharedBase.newBuilder()
         .addInterceptor(HeaderInterceptor(store))
         .addInterceptor(SignInterceptor(store))
         .addInterceptor(httpLogGate)
         .addInterceptor(httpLog)
         .build()
     // xchanger (ECARX DK backend) client — plain; the authCode in the body is the auth.
-    private val xchangerClient = OkHttpClient.Builder()
+    private val xchangerClient = sharedBase.newBuilder()
         .addInterceptor(httpLogGate)
         .addInterceptor(httpLog)
         .build()
@@ -478,5 +482,10 @@ class AccountLogin(private val store: ConfigStore) {
             "9300", "9301" -> "Login rejected - check your password (and, on SEA, that no email verification code is required)"
             else -> null
         }
+    }
+
+    private companion object {
+        /** Process-wide base client: its connection pool and dispatcher are shared by every instance. */
+        val sharedBase: OkHttpClient by lazy { OkHttpClient() }
     }
 }

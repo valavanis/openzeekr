@@ -143,7 +143,7 @@ fun AppRoot(deps: Deps) {
     }
 
     // New-version prompt. The Settings "update available" row is easy to miss, so surface a dialog when
-    // a newer GitHub release than the installed build is found (deps.checkForUpdate runs at startup).
+    // a newer GitHub release than the installed build is found (deps.checkForUpdateOnce runs when the UI first opens).
     // Persist the dismissed version so we prompt ONCE per new release, not on every launch - and prompt
     // again when an even newer one appears.
     val update by deps.updateAvailable.collectAsState()

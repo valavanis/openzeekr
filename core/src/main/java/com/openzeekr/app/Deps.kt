@@ -48,9 +48,15 @@ class Deps(context: Context) {
         return if (newer) latest else null
     }
 
-    init {
-        // One quiet check on launch (off the main thread); failures are ignored (offline is fine).
-        appScope.launch { runCatching { checkForUpdate() } }
+    private val updateChecked = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * One quiet GitHub check per process, the first time the UI comes to the foreground (off the main
+     * thread; failures ignored - offline is fine). Not in init: Deps is built on EVERY process start,
+     * including FCM pushes, Wear messages and BLE presence wake-ups, none of which should call GitHub.
+     */
+    fun checkForUpdateOnce() {
+        if (updateChecked.compareAndSet(false, true)) appScope.launch { runCatching { checkForUpdate() } }
     }
 
     val config: ConfigStore = ConfigStore.get(context)

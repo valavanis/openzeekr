@@ -54,7 +54,7 @@ class App : Application(), DepsHolder {
         private var started = 0
         override fun onActivityStarted(activity: Activity) {
             started++
-            if (started == 1) { AppForeground.isForeground = true; startHeartbeat() }
+            if (started == 1) { AppForeground.isForeground = true; startHeartbeat(); deps.checkForUpdateOnce() }
         }
         override fun onActivityStopped(activity: Activity) {
             started = (started - 1).coerceAtLeast(0)

@@ -18,9 +18,12 @@
         tools:targetApi="s"
         tools:node="replace" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!-- The watch never uses location (no proximity/RSSI ranging here); drop the one :core injects
-         so it can't contradict neverForLocation or prompt for a location grant on the watch. -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+    <!-- The watch never uses location (no proximity/RSSI ranging here). On API 31+ the neverForLocation
+         scan above needs no location, but on API 30 (Wear OS 3, which minSdk 30 targets) a BLE scan returns
+         NOTHING without ACCESS_FINE_LOCATION - removing it outright meant the watch never found the car
+         there. So keep it for API <= 30 only (replacing the unbounded one :core injects). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"
+        tools:node="replace" />
     <!-- No wakelock on the watch: it runs only when actively opened (the keep-alive/proximity
          service is removed below). Drop the one :core injects. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" tools:node="remove" />
