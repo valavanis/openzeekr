@@ -139,8 +139,12 @@ fun AppRoot(deps: Deps) {
     // user opening the watch app (the watch caches it; it also pulls on open as a fallback).
     val pushCtx = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(prov.step) {
+        // pushToWatches is a no-op unless "Watch key" is on (opt-in).
         if (prov.step == DkProvisioning.Step.DONE) com.openzeekr.app.wear.PhoneKeyPush.pushToWatches(pushCtx)
     }
+    // Keep the watches' durable key state in line with this phone: its key id while "Watch key" is on,
+    // none otherwise - so a watch holding a key the user hasn't opted into (or turned off) drops it.
+    LaunchedEffect(cfg.wearKeyEnabled, provisioned) { com.openzeekr.app.wear.PhoneKeyPush.publishKeyState(pushCtx) }
 
     // New-version prompt. The Settings "update available" row is easy to miss, so surface a dialog when
     // a newer GitHub release than the installed build is found (deps.checkForUpdateOnce runs when the UI first opens).

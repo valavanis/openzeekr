@@ -24,6 +24,28 @@ object WearKeyProtocol {
     const val PATH_KEY_STATE = "/openzeekr/key-state"
     const val KEY_STATE_DKID = "dkId"
 
+    // ---- Watch key opt-in: the phone shares its key only when the user turned "Watch key" on. ----
+
+    /** Reply field naming why the phone sent no key. */
+    const val KEY_ERROR = "error"
+    /** [KEY_ERROR] value: "Watch key" is off on the phone. */
+    const val ERR_WATCH_KEY_OFF = "watch-key-off"
+
+    /** The phone's reply to a key request: the key blob only while sharing is on, else a refusal
+     *  ({error: watch-key-off}); no key on the phone = an empty map. */
+    fun keyReply(watchKeyEnabled: Boolean, blob: Map<String, String>?): Map<String, String> = when {
+        !watchKeyEnabled -> mapOf(KEY_ERROR to ERR_WATCH_KEY_OFF)
+        blob == null -> emptyMap()
+        else -> blob
+    }
+
+    /** The refusal reason in a key reply, or null if it carries a key (or nothing). */
+    fun replyError(reply: Map<String, String>): String? = reply[KEY_ERROR]
+
+    /** The key id published as durable state: the phone's key only while sharing is on, else "" (the
+     *  watches then purge any copy). */
+    fun publishedKeyId(watchKeyEnabled: Boolean, phoneDkId: String): String = if (watchKeyEnabled) phoneDkId else ""
+
     /** True when the watch holds a key ([watchDkId]) that is not the phone's current one ([phoneDkId]). */
     fun watchMustPurge(watchDkId: String?, phoneDkId: String): Boolean =
         watchDkId != null && watchDkId != phoneDkId

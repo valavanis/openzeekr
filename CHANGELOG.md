@@ -31,6 +31,14 @@ clean-room app and is not affiliated with Zeekr.
   key only acts over Bluetooth on the car it belongs to.
 - **Watch on Wear OS 3** can find the car again.
 
+### Changed
+- **Watch key is now opt-in.** The phone gives its digital key to your watch only after you turn on
+  **Watch key** in the Key tab, and the watch only accepts it with a screen lock set. After updating,
+  a watch that already had the key drops it until you turn Watch key on.
+- **Approach unlock is safer.** It never unlocks from further out than the -65 dBm safety limit, whatever
+  the sensitivity, and it needs you to have actually walked up: a phone lying still next to the car (e.g.
+  the app restarting overnight with the car in the garage) no longer unlocks it.
+
 ## [0.2] - 2026-10-02
 
 ### Added

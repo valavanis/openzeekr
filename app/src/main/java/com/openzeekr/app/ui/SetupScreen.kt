@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -294,6 +295,37 @@ fun SetupScreen(
             Text(
                 "Runs a low-power scan, then connects & unlocks over the BLE key. Uses a foreground " +
                     "service - allow unrestricted background for reliability.",
+                color = Brand.faint, fontSize = 11.sp,
+            )
+        }
+
+        // Watch key: OPT-IN. The phone's key goes to the watch only once the user turns this on.
+        SectionHeader("Watch")
+        CockpitCard {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(Brand.surface2), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Watch, null, tint = Brand.accent, modifier = Modifier.size(20.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("Watch key", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("Lock / unlock from your Wear OS watch.", color = Brand.muted, fontSize = 12.sp)
+                }
+                Switch(
+                    checked = cfg.wearKeyEnabled,
+                    enabled = ready || cfg.wearKeyEnabled,
+                    onCheckedChange = { on ->
+                        config.update { it.copy(wearKeyEnabled = on) }
+                        // On: hand the key to the watch now. Off: make every watch drop its copy.
+                        if (on) com.openzeekr.app.wear.PhoneKeyPush.pushToWatches(context)
+                        else com.openzeekr.app.wear.PhoneKeyPush.purgeWatches(context)
+                    },
+                    colors = brandSwitchColors(Brand.good),
+                )
+            }
+            Text(
+                "Copies this phone's digital key to your paired watch: anyone holding the unlocked watch " +
+                    "can open the car. The watch only accepts it with a screen lock set. Turning this off " +
+                    "removes the key from the watch.",
                 color = Brand.faint, fontSize = 11.sp,
             )
         }

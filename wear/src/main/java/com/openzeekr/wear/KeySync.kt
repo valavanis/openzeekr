@@ -61,9 +61,20 @@ class KeySyncService : WearableListenerService() {
         val blob = runCatching {
             Json.decodeFromString<Map<String, String>>(raw)
         }.getOrNull()
+        if (blob != null && WearKeyProtocol.replyError(blob) == WearKeyProtocol.ERR_WATCH_KEY_OFF) {
+            Log.i(TAG, "phone refused: Watch key is off")
+            WearKeyState.status.value = "Turn on \"Watch key\" in the phone app (Key tab)"
+            return
+        }
         if (blob.isNullOrEmpty()) {
             Log.w(TAG, "reply had no key — phone is not provisioned")
             WearKeyState.status.value = "Phone has no key yet — provision it first"
+            return
+        }
+        // Anyone holding an unlocked watch can open the car: never keep the key on a watch without a lock.
+        if (!WearKeyState.deviceSecure(this)) {
+            Log.w(TAG, "refusing the key: no screen lock on this watch")
+            WearKeyState.status.value = WearKeyState.NEEDS_LOCK
             return
         }
         DkIdentity.get(this).importCredentialBlob(blob)

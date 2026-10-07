@@ -126,6 +126,13 @@ data class SecretsConfig(
     val appVersion: String = "3.0.7",
     val sigVersion: String = "1.0",
 
+    /**
+     * Share the digital key with the paired Wear OS watch (opt-in, off by default). Anyone holding the
+     * unlocked watch can open the car, so the user must choose it; the watch also refuses the key
+     * without a screen lock. Turning it off makes every watch drop its copy.
+     */
+    val wearKeyEnabled: Boolean = false,
+
     // ---- proximity (RSSI-based approach-unlock / walk-away-lock) ----
     val proximityEnabled: Boolean = false,
     /** BLE MAC of the vehicle to range against (blank = strongest advertiser). */

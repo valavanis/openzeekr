@@ -46,10 +46,12 @@ object PhoneKeyPush {
     fun publishKeyState(context: Context) {
         val ctx = context.applicationContext
         val id = DkIdentity.get(ctx)
-        // "" (no key) ONLY when the phone really has none: a failed read of a key that exists must not
-        // tell the watch to wipe its valid copy.
-        val dkId = if (!id.isProvisioned) "" else runCatching { id.credential()?.dkId }.getOrNull()
+        val enabled = com.openzeekr.app.config.ConfigStore.get(ctx).current().wearKeyEnabled
+        // "" (no key) ONLY when the phone really has none or sharing is off: a failed read of a key that
+        // exists must not tell the watch to wipe its valid copy.
+        val phoneDkId = if (!enabled || !id.isProvisioned) "" else runCatching { id.credential()?.dkId }.getOrNull()
             ?: run { Log.w(TAG, "key state not published: couldn't read the current key"); return }
+        val dkId = WearKeyProtocol.publishedKeyId(enabled, phoneDkId)
         val req = PutDataMapRequest.create(WearKeyProtocol.PATH_KEY_STATE).apply {
             dataMap.putString(WearKeyProtocol.KEY_STATE_DKID, dkId)
             dataMap.putLong("ts", System.currentTimeMillis()) // always a change, so it always syncs
@@ -61,6 +63,9 @@ object PhoneKeyPush {
 
     fun pushToWatches(context: Context) {
         val ctx = context.applicationContext
+        if (!com.openzeekr.app.config.ConfigStore.get(ctx).current().wearKeyEnabled) {
+            Log.i(TAG, "push skipped — Watch key is off"); return
+        }
         val blob = DkIdentity.get(ctx).exportCredentialBlob() ?: run {
             Log.i(TAG, "push skipped — phone not provisioned yet"); return
         }

@@ -67,8 +67,19 @@ object WearKeyState {
     /** Human-readable reason shown while waiting for the key (node count, empty blob, errors). */
     val status = MutableStateFlow<String?>(null)
 
+    const val NEEDS_LOCK = "Set a screen lock on this watch to use the car key"
+
+    /** True when this watch has a secure lock screen (PIN / pattern / password). */
+    fun deviceSecure(context: Context): Boolean =
+        (context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager)?.isDeviceSecure == true
+
     fun refresh(context: Context) {
         val id = DkIdentity.get(context)
+        // A key on a watch whose screen lock was removed since: wipe it, don't use it.
+        if (id.isProvisioned && !deviceSecure(context)) {
+            id.wipeAll()
+            status.value = NEEDS_LOCK
+        }
         val ok = id.isProvisioned
         val ble = DkBleManager.get(context)
         // Without a key, also drop the in-memory copy: after a purge it could otherwise still unlock
