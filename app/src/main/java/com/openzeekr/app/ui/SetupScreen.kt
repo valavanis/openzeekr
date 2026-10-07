@@ -272,6 +272,16 @@ fun SetupScreen(
                     },
                     color = Brand.faint, fontSize = 11.5.sp,
                 )
+                // The -65 dBm safety floor (never unlock from further out) can override the preset - say so.
+                if (cfg.unlockFloorUnreachable) {
+                    Text("At the door this phone measured ${cfg.calibNearRssi} dBm - weaker than the " +
+                        "${SecretsConfig.UNLOCK_RSSI_FLOOR} dBm safety limit, so approach unlock will rarely or " +
+                        "never fire. Re-calibrate holding the phone the way you usually carry it, or unlock by hand.",
+                        color = Brand.crit, fontSize = 11.5.sp)
+                } else if (cfg.unlockClampedByFloor) {
+                    Text("Limited to ${SecretsConfig.UNLOCK_RSSI_FLOOR} dBm for safety: it never unlocks from " +
+                        "further out than that, whatever the setting.", color = Brand.energy, fontSize = 11.5.sp)
+                }
             }
 
             // --- Car-side passive entry (0x0151), DEV-ONLY. Tells the CAR to run its own approach/walk

@@ -319,12 +319,24 @@ data class SecretsConfig(
         get() = calibNearRssi < 0 && calibFarRssi < 0 && (calibNearRssi - calibFarRssi) >= CALIB_MIN_SPAN_DB
 
     /**
-     * Unlock RSSI for the chosen sensitivity preset. When calibrated, the presets are interpolated
-     * between the MEASURED door anchor ([calibNearRssi], strongest) and 6 m anchor ([calibFarRssi],
-     * weakest): "very close" = right at the door, "far" = unlock while still a few metres out, "close"
-     * = about halfway. Uncalibrated, we fall back to the fixed factory values.
+     * Unlock RSSI for the chosen sensitivity preset - the threshold the proximity controller uses. When
+     * calibrated, the presets are interpolated between the MEASURED door anchor ([calibNearRssi],
+     * strongest) and 6 m anchor ([calibFarRssi], weakest): "very close" = right at the door, "far" =
+     * unlock while still a few metres out, "close" = about halfway. Uncalibrated, we fall back to the
+     * fixed factory values. Either way it is never weaker than [UNLOCK_RSSI_FLOOR]: before, the floor
+     * only clamped a UI value, and a "far" preset on a weak calibration unlocked from ~10 m away.
      */
-    val sensitivityUnlockRssi: Int
+    val sensitivityUnlockRssi: Int get() = presetUnlockRssi.coerceAtLeast(UNLOCK_RSSI_FLOOR)
+
+    /** True when the floor, not the preset, sets the unlock point (the preset asked for a weaker signal). */
+    val unlockClampedByFloor: Boolean get() = presetUnlockRssi < UNLOCK_RSSI_FLOOR
+
+    /** True when even AT THE DOOR this phone measured a weaker signal than [UNLOCK_RSSI_FLOOR]: approach
+     *  unlock will rarely or never fire (re-calibrate as the phone is normally carried, or unlock by hand). */
+    val unlockFloorUnreachable: Boolean get() = isProximityCalibrated && calibNearRssi < UNLOCK_RSSI_FLOOR
+
+    /** The preset's unlock RSSI before the [UNLOCK_RSSI_FLOOR] clamp. */
+    private val presetUnlockRssi: Int
         get() = if (isProximityCalibrated) {
             val span = calibNearRssi - calibFarRssi   // > 0 (near is stronger / less negative)
             when (proximitySensitivity) {
