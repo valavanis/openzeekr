@@ -75,7 +75,9 @@ fun SecurityScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = 
     // Seed the real on/off state from getVehicleState (captured 2026-09-16): sentry/guard =
     // `vstdModeState` ("1"=armed), visitor = `visitorModeState`. So the toggles reflect the car,
     // not just the last in-app action.
-    LaunchedEffect(Unit) {
+    // Keyed on the active VIN: switching cars must re-read THAT car's state (and not show the previous one's).
+    LaunchedEffect(cfg.vin) {
+        sentry = false; visitor = false; gloveboxLocked = false
         when (val r = deps.control.controlState()) {
             is CallResult.Ok -> {
                 sentry = r.value["vstdModeState"] == "1"
@@ -91,11 +93,12 @@ fun SecurityScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = 
         return
     }
 
-    fun fire(label: String, cmd: Command, extra: List<ServiceParameter> = emptyList()) {
+    fun fire(label: String, cmd: Command, extra: List<ServiceParameter> = emptyList(), onFailed: () -> Unit = {}) {
         snackbar("$label…")
         scope.launch {
             when (val r = deps.control.send(cmd, extra)) {
-                is CallResult.Ok -> snackbar("$label ✓"); is CallResult.Err -> snackbar("$label ✗ ${r.message}")
+                is CallResult.Ok -> snackbar("$label ✓")
+                is CallResult.Err -> { onFailed(); snackbar("$label ✗ ${r.message}") }
             }
         }
     }
@@ -107,7 +110,9 @@ fun SecurityScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = 
                 if (sentry) "Armed" else "Off") {
                 Switch(checked = sentry, onCheckedChange = { on ->
                     sentry = on
-                    fire(if (on) "Sentry on" else "Sentry off", if (on) Command.SENTINEL_ON else Command.SENTINEL_OFF)
+                    // Flip back if the car didn't take it (asleep / offline), so "Armed" is never a lie.
+                    fire(if (on) "Sentry on" else "Sentry off", if (on) Command.SENTINEL_ON else Command.SENTINEL_OFF,
+                        onFailed = { sentry = !on })
                 }, colors = brandSwitchColors(Brand.good))
             }
             // Owner-only (shared accounts are refused server-side). Both need the user's PIN.

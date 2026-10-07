@@ -183,7 +183,10 @@ fun VehicleScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = M
     val windowLabel = when { windowsVenting -> "Vent"; windowsOpen -> "Open"; else -> "Windows" }
     val windowTint = if (windowsVenting) Brand.accent else Brand.energy
 
-    val locked = safety?.centralLockingStatus?.let { it == "1" } ?: true
+    // null = UNKNOWN (no status yet, or every status call failed): never show "Locked" without data -
+    // that read as secured while offline, and a tap on it sent UNLOCK.
+    val locked: Boolean? = safety?.centralLockingStatus?.let { it == "1" }
+    var askLock by remember { mutableStateOf(false) }
     val charging = elec?.chargingActive == true
     val plugged = elec?.pluggedIn == true
     val socStr = elec?.stateOfCharge?.takeIf { it.isNotBlank() } ?: elec?.chargeLevel
@@ -238,7 +241,7 @@ fun VehicleScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = M
             speedUnit = heroSpeedUnit, loading = info == null)
 
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            StatItem("Central lock", if (locked) "Locked" else "Unlocked", if (locked) Brand.good else Brand.energy, Modifier.weight(1f))
+            StatItem("Central lock", lockLabel(locked, unknown = "—"), lockTint(locked), Modifier.weight(1f))
             StatItem("Battery", soc?.let { "${fmt(it)}%" } ?: "—", MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
             StatItem("Range", rangeStr?.let { s -> s.toDoubleOrNull()?.let { Units.distance(it, cfg.distanceUnit) } ?: "$s km" } ?: "—", MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
             // Live average energy consumption (ElectricStatusVo.averPowerConsumption); unit is the
@@ -256,8 +259,11 @@ fun VehicleScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = M
             // deps.vehicleControl (BLE-first, cloud fallback). Trunk is ALWAYS shown; its sheet offers
             // Open/Close on a powered tailgate, else latch unlock/lock, and reflects live state.
             val tiles = buildList<@Composable RowScope.() -> Unit> {
-                add { Ctl(if (locked) Icons.Filled.Lock else Icons.Filled.LockOpen, if (locked) "Locked" else "Unlocked",
-                    tint = if (locked) Brand.good else Brand.energy, active = true, modifier = Modifier.weight(1f)) { door(!locked) } }
+                add { Ctl(if (locked == false) Icons.Filled.LockOpen else Icons.Filled.Lock, lockLabel(locked, unknown = "Lock?"),
+                    tint = lockTint(locked), active = locked != null, modifier = Modifier.weight(1f)) {
+                    // Unknown state: ask, rather than guess which way the toggle should go.
+                    if (locked == null) askLock = true else door(!locked)
+                } }
                 add { Ctl(climateIcon, "Climate", tint = climateTint, active = acOn, modifier = Modifier.weight(1f)) { showClimate = true } }
                 // Always open the sheet — charge limit, battery pre-conditioning (a PRE-charge action)
                 // and the charge-port control all live there, so it must be reachable when unplugged too.
@@ -336,6 +342,13 @@ fun VehicleScreen(deps: Deps, snackbar: (String) -> Unit, modifier: Modifier = M
         }
     }
 
+    if (askLock) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { askLock = false },
+        title = { Text("Lock state unknown") },
+        text = { Text("The car's lock state isn't available right now. Lock or unlock?") },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = { askLock = false; door(true) }) { Text("Lock") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { askLock = false; door(false) }) { Text("Unlock") } },
+    )
     if (showCharge) ChargeSheet(status, soc, powerKw, charging, plugged, elec,
         initialLimitPct = cfg.chargeLimitPct,
         devMode = cfg.devMode,
@@ -439,6 +452,9 @@ private fun StatItem(label: String, value: String, color: Color, modifier: Modif
             maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
     }
 }
+
+private fun lockLabel(locked: Boolean?, unknown: String) = when (locked) { true -> "Locked"; false -> "Unlocked"; null -> unknown }
+private fun lockTint(locked: Boolean?) = when (locked) { true -> Brand.good; false -> Brand.energy; null -> Brand.muted }
 
 @Composable
 private fun Ctl(icon: ImageVector, label: String, tint: Color = MaterialTheme.colorScheme.onSurface,

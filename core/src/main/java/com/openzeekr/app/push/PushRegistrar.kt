@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -63,13 +64,21 @@ class PushRegistrar(
         }
     }
 
-    /** Best-effort unregister on logout so the backend stops pushing to this endpoint. */
-    fun disableOnLogout() {
-        scope.launch {
-            runCatching {
-                val token = currentFcmToken() ?: return@launch
-                post(DISABLE_PATH, disableBody(token))
-            }.onFailure { Logx.w(TAG, "disable failed: ${it.message}") }
+    /**
+     * Best-effort unregister on logout so the backend stops pushing to this endpoint. SUSPENDS until the
+     * request is done (bounded): the request is authenticated with the account's tokens, so callers must
+     * await it BEFORE clearing the account - fire-and-forget raced [ConfigStore.signOut].
+     */
+    suspend fun disableOnLogout() {
+        try {
+            withTimeoutOrNull(DISABLE_TIMEOUT_MS) {
+                val token = currentFcmToken() ?: return@withTimeoutOrNull
+                post(DISABLE_PATH, disableBody(token), callTimeoutMs = DISABLE_TIMEOUT_MS)
+            } ?: Logx.w(TAG, "disable timed out")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logx.w(TAG, "disable failed: ${e.message}")
         }
     }
 
@@ -113,7 +122,9 @@ class PushRegistrar(
     private fun authToken(cfg: com.openzeekr.app.config.SecretsConfig): String =
         cfg.azureToken.ifBlank { cfg.accessToken }
 
-    private suspend fun post(path: String, bodyJson: String) = withContext(Dispatchers.IO) {
+    /** POST to the message centre. [callTimeoutMs] > 0 bounds the WHOLE call (DNS, connect, write, read):
+     *  the request is a blocking execute(), which coroutine timeouts cannot interrupt. */
+    private suspend fun post(path: String, bodyJson: String, callTimeoutMs: Long = 0) = withContext(Dispatchers.IO) {
         val cfg = store.current()
         val url = "${cfg.messageCoreUrl}$path"
         val bodyBytes = bodyJson.toByteArray(Charsets.UTF_8)
@@ -158,7 +169,9 @@ class PushRegistrar(
             .apply { if (auth.isNotBlank()) header("Authorization", auth) }
             .build()
 
-        http.newCall(req).execute().use { resp ->
+        val call = http.newCall(req)
+        if (callTimeoutMs > 0) call.timeout().timeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+        call.execute().use { resp ->
             val respBody = runCatching { resp.body?.string() }.getOrNull().orEmpty()
             Logx.d(TAG, "$path -> ${resp.code} ${respBody.take(200)}")
         }
@@ -179,6 +192,8 @@ class PushRegistrar(
         // fixed like the stock app; only the gateway host and the SNS region vary per region.
         const val SYNC_PATH = "/open-api/v1/mcs/notice/receiver/equipment/relation/sycn"   // (stock spelling)
         const val DISABLE_PATH = "/open-api/v1/mcs/notice/receiver/equipment/relation/disable"
+        /** Upper bound for the logout unregister, so sign-out never hangs on the network. */
+        const val DISABLE_TIMEOUT_MS = 10_000L
 
         const val APP_ID = "10008"           // prod push id (== msgAppId)
         const val MSG_CLIENT_ID = "1009"     // prod tenant (== app-authorization)

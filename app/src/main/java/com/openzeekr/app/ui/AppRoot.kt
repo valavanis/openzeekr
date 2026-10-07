@@ -52,6 +52,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -100,7 +101,9 @@ fun AppRoot(deps: Deps) {
     val tabs = Tab.entries.filter { it != Tab.UPDATES || cfg.isOwner }
     val prov by deps.provisioning.state.collectAsState()
     val loggedIn = cfg.accessToken.isNotBlank()
-    val provisioned = remember(prov.step) { deps.dkIdentity.isProvisioned } ||
+    // Keyed on the whole state, not just the step: Remove key goes IDLE -> IDLE ("key removed") in a fresh
+    // process, and keying on the step alone kept the stale `true` - the key service kept running.
+    val provisioned = remember(prov) { deps.dkIdentity.isProvisioned } ||
         prov.step == DkProvisioning.Step.DONE
 
     // First run: guided wizard (login → key). Skip straight to the app once done.
@@ -109,7 +112,9 @@ fun AppRoot(deps: Deps) {
         return
     }
 
-    AppBootstrap(deps, serviceEnabled = loggedIn && provisioned)
+    // The key service follows the KEY, not the cloud session: the BLE key works offline, so an expired or
+    // taken-over token (079012/079021) must not stop it. Sign-out removes the key, which stops it.
+    AppBootstrap(deps, serviceEnabled = provisioned)
 
     // Account taken over on another device (TSP 079021): the interceptor already cleared the
     // token (so we're now on the signed-out flow) — just explain why. Mirrors the stock app,
@@ -134,11 +139,15 @@ fun AppRoot(deps: Deps) {
     // user opening the watch app (the watch caches it; it also pulls on open as a fallback).
     val pushCtx = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(prov.step) {
+        // pushToWatches is a no-op unless "Watch key" is on (opt-in).
         if (prov.step == DkProvisioning.Step.DONE) com.openzeekr.app.wear.PhoneKeyPush.pushToWatches(pushCtx)
     }
+    // Keep the watches' durable key state in line with this phone: its key id while "Watch key" is on,
+    // none otherwise - so a watch holding a key the user hasn't opted into (or turned off) drops it.
+    LaunchedEffect(cfg.wearKeyEnabled, provisioned) { com.openzeekr.app.wear.PhoneKeyPush.publishKeyState(pushCtx) }
 
     // New-version prompt. The Settings "update available" row is easy to miss, so surface a dialog when
-    // a newer GitHub release than the installed build is found (deps.checkForUpdate runs at startup).
+    // a newer GitHub release than the installed build is found (deps.checkForUpdateOnce runs when the UI first opens).
     // Persist the dismissed version so we prompt ONCE per new release, not on every launch - and prompt
     // again when an even newer one appears.
     val update by deps.updateAvailable.collectAsState()
@@ -204,23 +213,29 @@ fun AppRoot(deps: Deps) {
     // screen and after closing the inbox), so an invite that arrives after login still surfaces.
     LaunchedEffect(loggedIn) { deps.refreshInvites() }
 
-    if (showInbox) {
-        InboxScreen(deps, onBack = { showInbox = false; refreshUnread() }, snackbar = snackbar)
-        return
-    }
-
     // Track the selected tab by enum (not index) so filtering the tab list (owner-only Updates) can't
-    // shift indices out from under us.
-    var selectedTab by remember { mutableStateOf(Tab.SETTINGS) }
+    // shift indices out from under us. Declared ABOVE the inbox takeover and saveable, so opening the
+    // inbox or rotating keeps the user's tab; it is auto-picked only when login / key state CHANGES.
+    var selectedTab by rememberSaveable { mutableStateOf(Tab.SETTINGS) }
+    var tabPickedFor by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(loggedIn, provisioned) {
-        selectedTab = when {
-            !loggedIn -> Tab.SETTINGS
-            !provisioned -> Tab.KEY
-            else -> Tab.VEHICLE
+        val key = "$loggedIn/$provisioned"
+        if (tabPickedFor != key) {
+            tabPickedFor = key
+            selectedTab = when {
+                !loggedIn -> Tab.SETTINGS
+                !provisioned -> Tab.KEY
+                else -> Tab.VEHICLE
+            }
         }
     }
     // If the current tab stops being visible (e.g. Updates while on a shared account), fall back.
     LaunchedEffect(tabs) { if (selectedTab !in tabs) selectedTab = Tab.VEHICLE }
+
+    if (showInbox) {
+        InboxScreen(deps, onBack = { showInbox = false; refreshUnread() }, snackbar = snackbar)
+        return
+    }
 
     Scaffold(
         topBar = {

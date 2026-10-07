@@ -14,6 +14,7 @@ import com.openzeekr.app.net.model.SentryVideoResp
 import kotlinx.serialization.json.JsonObject
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.PUT
 import retrofit2.http.POST
 import retrofit2.http.Path
@@ -38,6 +39,7 @@ interface TspApi {
     @POST("ms-remote-control/v1.0/remoteControl/control")
     suspend fun sendControl(
         @Body body: RemoteControlRequest,
+        @Header(TARGET_VIN_HEADER) targetVin: String? = null,
     ): BaseResponse<RemoteControlResponse>
 
     // ---- charging control (serviceId RCS) — a SEPARATE service from ms-remote-control ----
@@ -47,6 +49,7 @@ interface TspApi {
     @POST("ms-charge-manage/api/v1.0/charge/control")
     suspend fun sendChargeControl(
         @Body body: RemoteControlRequest,
+        @Header(TARGET_VIN_HEADER) targetVin: String? = null,
     ): BaseResponse<RemoteControlResponse>
 
     // ---- scheduled charging: V1 "charging plan" (single daily window per timerId) ----
@@ -86,6 +89,7 @@ interface TspApi {
     suspend fun vehicleStatus(
         @Query("latest") latest: String = "false",
         @Query("target") target: String = "new",
+        @Header(TARGET_VIN_HEADER) targetVin: String? = null,
     ): BaseResponse<JsonObject>
 
     // ---- ecarx "device-api" control (System B) — physical actuation (RDU_2/RDL_2/RDO/RDC) ----
@@ -94,6 +98,7 @@ interface TspApi {
     suspend fun ecarxControl(
         @Path("vin") vin: String,
         @Body body: com.openzeekr.app.net.model.EcarxControlRequest,
+        @Header(TARGET_VIN_HEADER) targetVin: String? = null,
     ): com.openzeekr.app.net.model.EcarxControlResponse
 
     // ---- per-VIN supported functions (drive button visibility) ----

@@ -48,9 +48,15 @@ class Deps(context: Context) {
         return if (newer) latest else null
     }
 
-    init {
-        // One quiet check on launch (off the main thread); failures are ignored (offline is fine).
-        appScope.launch { runCatching { checkForUpdate() } }
+    private val updateChecked = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * One quiet GitHub check per process, the first time the UI comes to the foreground (off the main
+     * thread; failures ignored - offline is fine). Not in init: Deps is built on EVERY process start,
+     * including FCM pushes, Wear messages and BLE presence wake-ups, none of which should call GitHub.
+     */
+    fun checkForUpdateOnce() {
+        if (updateChecked.compareAndSet(false, true)) appScope.launch { runCatching { checkForUpdate() } }
     }
 
     val config: ConfigStore = ConfigStore.get(context)
@@ -90,13 +96,13 @@ class Deps(context: Context) {
     /** Car-side schedules: off-peak charging windows + departure/booking-travel preconditioning. */
     val schedule = com.openzeekr.app.remote.ScheduleRepository(config, apiClient)
     /** Live vehicle status (foreground poll, no push) — observed by the UI. */
-    val vehicleState = VehicleStatusHolder(control, appScope)
+    val vehicleState = VehicleStatusHolder(control, appScope) { config.current().vin }
     /** Per-VIN supported functions — drives which controls the UI shows. */
     val capabilities = CapabilityHolder(control, appScope)
 
     val ble: DkBleManager = DkBleManager.get(context)
     /** BLE-first, cloud-fallback dispatcher for actions the DK session can actuate directly. */
-    val vehicleControl = com.openzeekr.app.remote.VehicleControl(ble, control)
+    val vehicleControl = com.openzeekr.app.remote.VehicleControl(ble, control) { config.current().vin }
     // One device id for both the TSP transport (x-device-id) and the DK body,
     // as the stock app does (single getDeviceID). Also arm the BLE session if a
     // credential was already provisioned on a previous run.
@@ -104,7 +110,7 @@ class Deps(context: Context) {
         if (config.current().deviceIdentifier != id.deviceId) config.update { it.copy(deviceIdentifier = id.deviceId) }
         id.credential()?.let { ble.setCredential(it) }
     }
-    val provisioning = DkProvisioning(config, dkIdentity, ble)
+    val provisioning = DkProvisioning(config, dkIdentity, ble, appScope)
     val lock = DkLockController(ble.session) { ble.refreshSession() }
     val phoneStatus = PhoneStatusProvider(appCtx)
     val rpa = RpaController(ble.session, appScope, phoneStatus::stateByte, rssi = ble::pollRemoteRssi)
@@ -116,10 +122,13 @@ class Deps(context: Context) {
     val proximity = ProximityController(
         appCtx, config, lock, ble, motion, appScope,
         // Cloud lock fallback for the walk-away lock when BLE won't confirm — never leave the car open.
-        cloudLock = { control.send(com.openzeekr.app.remote.Command.LOCK) is com.openzeekr.app.remote.CallResult.Ok },
+        // Both target the KEY's car (the one walked away from), not whichever car is active in the UI.
+        cloudLock = {
+            control.send(com.openzeekr.app.remote.Command.LOCK, vin = ble.credentialVin) is com.openzeekr.app.remote.CallResult.Ok
+        },
         // Cloud lock-state probe for the out-of-range backstop: centralLockingStatus "1"=locked, "0"=unlocked.
         cloudIsLocked = {
-            (control.status() as? com.openzeekr.app.remote.CallResult.Ok)?.value
+            (control.status(vin = ble.credentialVin) as? com.openzeekr.app.remote.CallResult.Ok)?.value
                 ?.additionalVehicleStatus?.drivingSafetyStatus?.centralLockingStatus
                 ?.let { it == "1" }
         },

@@ -16,6 +16,16 @@ class VinCryptoTest {
         assertEquals(vin, result)
     }
 
+    // Known answer (AES-128-CBC/PKCS7 + standard Base64, computed independently with Python
+    // `cryptography`): pins the exact X-VIN wire value across the android.util -> java.util Base64 swap.
+    @Test
+    fun testEncryptVinKnownAnswer() {
+        assertEquals(
+            "1i926/OvoNoURerwbqxhdyp8s+vP5fpsWs+PbqtJCuY=",
+            VinCrypto.encryptVin("LRWYGCEK1PC000001", "0123456789abcdef", "fedcba9876543210"),
+        )
+    }
+
     @Test
     fun testEncryptVinWithBlankVin() {
         val vin = ""

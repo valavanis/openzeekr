@@ -18,7 +18,7 @@ import java.util.UUID
  * Supports import/export of the exact `zeekr_secrets.json` shape so an existing
  * dump can be loaded, and the current config saved back out.
  */
-class ConfigStore private constructor(private val prefs: SharedPreferences) {
+class ConfigStore @androidx.annotation.VisibleForTesting internal constructor(private val prefs: SharedPreferences) {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true }
 
@@ -83,6 +83,7 @@ class ConfigStore private constructor(private val prefs: SharedPreferences) {
     fun signOut() = update {
         it.copy(
             email = "", password = "", accessToken = "", userId = "", accountUuid = "",
+            azureToken = "", xchangerToken = "", xchangerClientId = "",
             vin = "", carNickname = "", vehicles = emptyList(),
             deviceIdentifier = "", appInstanceId = "",
         )
@@ -207,7 +208,12 @@ class ConfigStore private constructor(private val prefs: SharedPreferences) {
 
     fun current(): SecretsConfig = _config.value
 
-    fun update(transform: (SecretsConfig) -> SecretsConfig) {
+    // Serializes every read-modify-write. update() is called from OkHttp (kick-out), IO (login, garage
+    // reconcile) and Main (Settings) threads; unsynchronized, concurrent updates were lost - e.g. a
+    // freshly stored bearer token overwritten by a stale snapshot. Reentrant (reconcileGarage nests).
+    private val writeLock = Any()
+
+    fun update(transform: (SecretsConfig) -> SecretsConfig) = synchronized(writeLock) {
         val next = ensureDeviceId(transform(_config.value))
         // Log validation failures but persist anyway so the app doesn't crash on startup
         // housekeeping; the user can fix missing fields in Settings.
@@ -216,9 +222,11 @@ class ConfigStore private constructor(private val prefs: SharedPreferences) {
     }
 
     fun replace(cfg: SecretsConfig): Result<Unit> = runCatching {
-        val next = ensureDeviceId(cfg)
-        next.check()
-        persist(next)
+        synchronized(writeLock) {
+            val next = ensureDeviceId(cfg)
+            next.check()
+            persist(next)
+        }
     }
 
     private fun persist(cfg: SecretsConfig) {
@@ -230,6 +238,10 @@ class ConfigStore private constructor(private val prefs: SharedPreferences) {
      *  present keys overwrite, absent keys keep their current value. */
     fun importJson(text: String): Result<Unit> = runCatching {
         val incoming = json.decodeFromString<SecretsConfig>(text)
+        synchronized(writeLock) { importMerged(incoming) }
+    }
+
+    private fun importMerged(incoming: SecretsConfig) {
         // Merge: only overwrite fields that are non-blank in the incoming doc.
         val cur = _config.value
         val merged = cur.copy(
@@ -240,6 +252,10 @@ class ConfigStore private constructor(private val prefs: SharedPreferences) {
             vinKey = incoming.vinKey.ifBlank { cur.vinKey },
             vinIv = incoming.vinIv.ifBlank { cur.vinIv },
             xchangerSignSecret = incoming.xchangerSignSecret.ifBlank { cur.xchangerSignSecret },
+            // The optional inbox keys (documented in secrets.example.json / the README import shape).
+            overseasAccessKey = incoming.overseasAccessKey.ifBlank { cur.overseasAccessKey },
+            overseasSecretKey = incoming.overseasSecretKey.ifBlank { cur.overseasSecretKey },
+            inboxAuthSecret = incoming.inboxAuthSecret.ifBlank { cur.inboxAuthSecret },
             email = incoming.email.ifBlank { cur.email },
             password = incoming.password.ifBlank { cur.password },
             vin = incoming.vin.ifBlank { cur.vin },
@@ -253,7 +269,15 @@ class ConfigStore private constructor(private val prefs: SharedPreferences) {
         persist(merged)
     }
 
-    fun exportJson(): String = json.encodeToString(SecretsConfig.serializer(), _config.value)
+    /**
+     * The config as JSON, for backup / moving the app keys to another install. Never includes the
+     * account password or any session token: the export goes through the clipboard, and tokens are
+     * device-bound anyway (a re-login on the new install mints its own).
+     */
+    fun exportJson(): String = json.encodeToString(
+        SecretsConfig.serializer(),
+        _config.value.copy(password = "", accessToken = "", azureToken = "", xchangerToken = "", xchangerClientId = ""),
+    )
 
     companion object {
         private const val FILE = "openzeekr_secure_config"

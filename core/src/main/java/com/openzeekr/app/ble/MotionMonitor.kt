@@ -77,6 +77,11 @@ class MotionMonitor(context: Context) {
     /** Invoked once on each STILL→MOVING edge (any source). Lets the caller cancel a long idle sleep. */
     @Volatile var onMovingEdge: (() -> Unit)? = null
 
+    /** When the phone was last seen moving (epoch ms; 0 = not since this process started). Kept across
+     *  stop/start, so "walked up a moment ago" survives a monitor restart but a fresh process starts at 0. */
+    @Volatile var lastMovingAtMs: Long = 0L
+        private set
+
     @Volatile private var running = false
     private var arPendingIntent: PendingIntent? = null
 
@@ -140,6 +145,7 @@ class MotionMonitor(context: Context) {
         stopActivityRecognition()
         active = null
         source = Source.NONE
+        if (_state.value == Motion.MOVING) lastMovingAtMs = System.currentTimeMillis()
         _state.value = Motion.UNKNOWN
         _inVehicle.value = false
     }
@@ -148,9 +154,12 @@ class MotionMonitor(context: Context) {
     private fun armStationary() { runCatching { stationaryDetect?.let { sensors?.requestTriggerSensor(onStationary, it) } } }
 
     private fun setMoving() {
+        lastMovingAtMs = System.currentTimeMillis()
         if (_state.value != Motion.MOVING) { _state.value = Motion.MOVING; Logx.d("motion", "-> MOVING"); onMovingEdge?.invoke() }
     }
     private fun setStill() {
+        // Leaving MOVING is the last moment we know the phone moved.
+        if (_state.value == Motion.MOVING) lastMovingAtMs = System.currentTimeMillis()
         if (_state.value != Motion.STILL) { _state.value = Motion.STILL; _inVehicle.value = false; Logx.d("motion", "-> STILL") }
     }
 

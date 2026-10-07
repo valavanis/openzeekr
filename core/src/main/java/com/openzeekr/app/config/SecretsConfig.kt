@@ -5,6 +5,7 @@ import com.openzeekr.app.util.NativeSecrets
 import com.openzeekr.core.BuildConfig
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
  * All runtime configuration for the app.
@@ -124,6 +125,13 @@ data class SecretsConfig(
     val envType: String = "prod",
     val appVersion: String = "3.0.7",
     val sigVersion: String = "1.0",
+
+    /**
+     * Share the digital key with the paired Wear OS watch (opt-in, off by default). Anyone holding the
+     * unlocked watch can open the car, so the user must choose it; the watch also refuses the key
+     * without a screen lock. Turning it off makes every watch drop its copy.
+     */
+    val wearKeyEnabled: Boolean = false,
 
     // ---- proximity (RSSI-based approach-unlock / walk-away-lock) ----
     val proximityEnabled: Boolean = false,
@@ -270,6 +278,13 @@ data class SecretsConfig(
      * `gateway-pub-hw-em-sg.zeekrlife.com/zeekr-cuc-idaas-sea/auth/checkUserV2`). Using the EU segment
      * on SEA 404s the whole login at step 1. LA/ME segments are unverified - default to the EU form.
      */
+    /**
+     * TSP gateway as a Retrofit base (trailing slash). Falls back to this region's default gateway when
+     * [baseUrl] isn't a valid http(s) URL - e.g. the Settings field mid-edit. Retrofit.baseUrl throws on
+     * an invalid URL, which crashed the app and, the value being persisted, every launch after it.
+     */
+    val tspBase: String get() = tspBaseOrDefault(baseUrl, com.openzeekr.app.net.Region.byCode(regionCode).tspBaseUrl)
+
     val usercenterUrl: String get() {
         val seg = if (regionCode.equals("SEA", ignoreCase = true)) "zeekr-cuc-idaas-sea" else "zeekr-cuc-idaas"
         return "$azureBase/$seg/"
@@ -311,12 +326,24 @@ data class SecretsConfig(
         get() = calibNearRssi < 0 && calibFarRssi < 0 && (calibNearRssi - calibFarRssi) >= CALIB_MIN_SPAN_DB
 
     /**
-     * Unlock RSSI for the chosen sensitivity preset. When calibrated, the presets are interpolated
-     * between the MEASURED door anchor ([calibNearRssi], strongest) and 6 m anchor ([calibFarRssi],
-     * weakest): "very close" = right at the door, "far" = unlock while still a few metres out, "close"
-     * = about halfway. Uncalibrated, we fall back to the fixed factory values.
+     * Unlock RSSI for the chosen sensitivity preset - the threshold the proximity controller uses. When
+     * calibrated, the presets are interpolated between the MEASURED door anchor ([calibNearRssi],
+     * strongest) and 6 m anchor ([calibFarRssi], weakest): "very close" = right at the door, "far" =
+     * unlock while still a few metres out, "close" = about halfway. Uncalibrated, we fall back to the
+     * fixed factory values. Either way it is never weaker than [UNLOCK_RSSI_FLOOR]: before, the floor
+     * only clamped a UI value, and a "far" preset on a weak calibration unlocked from ~10 m away.
      */
-    val sensitivityUnlockRssi: Int
+    val sensitivityUnlockRssi: Int get() = presetUnlockRssi.coerceAtLeast(UNLOCK_RSSI_FLOOR)
+
+    /** True when the floor, not the preset, sets the unlock point (the preset asked for a weaker signal). */
+    val unlockClampedByFloor: Boolean get() = presetUnlockRssi < UNLOCK_RSSI_FLOOR
+
+    /** True when even AT THE DOOR this phone measured a weaker signal than [UNLOCK_RSSI_FLOOR]: approach
+     *  unlock will rarely or never fire (re-calibrate as the phone is normally carried, or unlock by hand). */
+    val unlockFloorUnreachable: Boolean get() = isProximityCalibrated && calibNearRssi < UNLOCK_RSSI_FLOOR
+
+    /** The preset's unlock RSSI before the [UNLOCK_RSSI_FLOOR] clamp. */
+    private val presetUnlockRssi: Int
         get() = if (isProximityCalibrated) {
             val span = calibNearRssi - calibFarRssi   // > 0 (near is stronger / less negative)
             when (proximitySensitivity) {
@@ -337,6 +364,12 @@ data class SecretsConfig(
     val sensitivityLockRssi: Int get() = sensitivityUnlockRssi - LOCK_RSSI_GAP_DB
 
     companion object {
+        /** [configured] normalised to one trailing slash if it's a valid http(s) URL, else [fallback]. */
+        internal fun tspBaseOrDefault(configured: String, fallback: String): String {
+            val base = configured.trim().trimEnd('/') + "/"
+            return if (base.toHttpUrlOrNull() != null) base else fallback.trim().trimEnd('/') + "/"
+        }
+
         /** Unlock can never be set weaker (more negative) than this — safety floor. */
         const val UNLOCK_RSSI_FLOOR = -65
         /** Lock threshold sits this many dB weaker (farther) than unlock - the single hysteresis gap used

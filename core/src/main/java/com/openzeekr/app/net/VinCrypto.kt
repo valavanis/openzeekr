@@ -1,6 +1,5 @@
 package com.openzeekr.app.net
 
-import android.util.Base64
 import com.openzeekr.app.util.Logx
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -25,7 +24,8 @@ object VinCrypto {
         return runCatching {
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
-            Base64.encodeToString(cipher.doFinal(vin.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+            // java.util.Base64 (API 26 = minSdk): same output as android.util.Base64.NO_WRAP, and testable on the JVM.
+            java.util.Base64.getEncoder().encodeToString(cipher.doFinal(vin.toByteArray(Charsets.UTF_8)))
         }.getOrElse { t ->
             Logx.e("net", "VIN encryption failed: ${t.message}")
             vin

@@ -20,20 +20,30 @@ import java.util.UUID
  */
 class KickoutInterceptor(private val store: ConfigStore) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
+        // The token this request goes out with (HeaderInterceptor, next in the chain, reads the same one).
+        val sentWith = store.current().accessToken
         val resp = chain.proceed(chain.request())
         if (resp.code == 401) {
             val body = runCatching { resp.peekBody(1024).string() }.getOrNull()
             if (body?.contains("079021") == true) {
                 Logx.w("session", "079021 account logged in elsewhere — signing out")
-                if (store.current().accessToken.isNotBlank()) store.update { it.copy(accessToken = "") }
-                SessionSignal.loggedInElsewhere.value = true
+                if (clearIfStillCurrent(sentWith)) SessionSignal.loggedInElsewhere.value = true
             } else if (body?.contains("079012") == true) {
                 Logx.w("session", "079012 token expired — clearing session, prompting re-login")
-                if (store.current().accessToken.isNotBlank()) store.update { it.copy(accessToken = "") }
-                SessionSignal.sessionExpired.value = true
+                if (clearIfStillCurrent(sentWith)) SessionSignal.sessionExpired.value = true
             }
         }
         return resp
+    }
+
+    /** Clear the token only if it is still the one the rejected request used: a slow call made with an
+     *  old token must not wipe a session the user has signed in to since. Returns true if cleared. */
+    private fun clearIfStillCurrent(sentWith: String): Boolean {
+        var cleared = false
+        store.update {
+            if (it.accessToken.isNotBlank() && it.accessToken == sentWith) { cleared = true; it.copy(accessToken = "") } else it
+        }
+        return cleared
     }
 }
 
@@ -51,11 +61,20 @@ class KickoutInterceptor(private val store: ConfigStore) : Interceptor {
  *  scheme — the TSP interceptors passthrough for it and [OverseasAppAuthInterceptor] signs it. */
 internal fun okhttp3.Request.isOverseasApp(): Boolean = url.encodedPath.startsWith("/overseas-app")
 
+/**
+ * Internal request header that targets a car other than the active one (e.g. the digital key's car for
+ * the walk-away cloud lock). [HeaderInterceptor] turns it into X-VIN and strips it, so it is never sent
+ * and never part of the signed string.
+ */
+const val TARGET_VIN_HEADER = "X-OZ-Target-VIN"
+
 class HeaderInterceptor(private val store: ConfigStore) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         if (chain.request().isOverseasApp()) return chain.proceed(chain.request())
         val cfg = store.current()
         val b = chain.request().newBuilder()
+        val vin = chain.request().header(TARGET_VIN_HEADER) ?: cfg.vin
+        b.removeHeader(TARGET_VIN_HEADER)
 
         // LOGGED_IN_HEADERS base (don't override anything a caller already set).
         // X-DEVICE-ID = app-instance UUID (like stock's ecc8e262-…), NOT the DK deviceId.
@@ -65,8 +84,8 @@ class HeaderInterceptor(private val store: ConfigStore) : Interceptor {
         if (cfg.accessToken.isNotBlank()) b.header("authorization", cfg.accessToken)
         // X-VIN is AES-CBC(vin_key/vin_iv)-encrypted; only send it when we can encrypt
         // it correctly (blank key -> omit rather than send a bad raw value).
-        val sendVin = cfg.vin.isNotBlank() && cfg.vinKey.isNotBlank() && cfg.vinIv.isNotBlank()
-        if (sendVin) b.header("x-vin", VinCrypto.encryptVin(cfg.vin, cfg.vinKey, cfg.vinIv))
+        val sendVin = vin.isNotBlank() && cfg.vinKey.isNotBlank() && cfg.vinIv.isNotBlank()
+        if (sendVin) b.header("x-vin", VinCrypto.encryptVin(vin, cfg.vinKey, cfg.vinIv))
         Logx.d("tsp", "${chain.request().method} ${chain.request().url.encodedPath} " +
             "auth=${if (cfg.accessToken.isNotBlank()) "yes" else "no"} x-vin=${if (sendVin) "yes" else "no"}")
         return chain.proceed(b.build())

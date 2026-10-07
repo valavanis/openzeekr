@@ -161,7 +161,10 @@ fun OtaScreen(deps: Deps, modifier: Modifier = Modifier) {
     }
 
     // Load the current status when the tab opens - the update card should populate on its own, no tap needed.
-    LaunchedEffect(Unit) {
+    // Keyed on the active car, so a car switch drops the previous car's update state and reloads.
+    val cfg by deps.config.config.collectAsState()
+    LaunchedEffect(cfg.vin) {
+        status = null; error = null
         checking = true
         refresh()
         checking = false
@@ -179,7 +182,6 @@ fun OtaScreen(deps: Deps, modifier: Modifier = Modifier) {
     // LIVE updates: the car's OTA status pushes (FCM) arrive several seconds ahead of versionV2 polling, so
     // track them for an instant, lag-free lifecycle. The push is authoritative for the phase/percent; we
     // still re-fetch to keep versions / release notes / assignment info current. Filtered to the active car.
-    val cfg by deps.config.config.collectAsState()
     LaunchedEffect(Unit) {
         com.openzeekr.app.push.OtaStatusBus.events.collect { e ->
             if (e.vin != null && e.vin != cfg.vin) return@collect

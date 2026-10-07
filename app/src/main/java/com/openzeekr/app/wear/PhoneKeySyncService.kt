@@ -44,11 +44,16 @@ class PhoneKeySyncService : WearableListenerService() {
     }
 
     private fun sendKey(nodeId: String) {
-        val blob = DkIdentity.get(this).exportCredentialBlob()
-        if (blob == null) Log.w(TAG, "phone has no provisioned key to share")
-        else Log.i(TAG, "phone sharing key (${blob.size} fields)")
-        val json = if (blob != null) Json.encodeToString(blob) else "{}"
-        send(nodeId, WearKeyProtocol.PATH_KEY, json.toByteArray(Charsets.UTF_8))
+        // Opt-in: only while the user turned "Watch key" on in the Key tab.
+        val enabled = com.openzeekr.app.config.ConfigStore.get(this).current().wearKeyEnabled
+        val blob = if (enabled) DkIdentity.get(this).exportCredentialBlob() else null
+        val reply = WearKeyProtocol.keyReply(enabled, blob)
+        when {
+            !enabled -> Log.i(TAG, "watch asked for the key - Watch key is off, refusing")
+            blob == null -> Log.w(TAG, "phone has no provisioned key to share")
+            else -> Log.i(TAG, "phone sharing key (${blob.size} fields)")
+        }
+        send(nodeId, WearKeyProtocol.PATH_KEY, Json.encodeToString(reply).toByteArray(Charsets.UTF_8))
     }
 
     /** Tell the watch whether we're holding the car link and whether proximity is running. */

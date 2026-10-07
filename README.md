@@ -39,11 +39,12 @@ for interoperability and research.
 > account in OpenZeekr. That way the official app stays logged in on your main account and
 > the two don't keep kicking each other out.
 
-> ⌚ **The Wear OS companion copies the digital key onto your watch.** That means
-> **anyone with access to your watch has a working key to your car** — it can unlock and
-> use the car. If you're not comfortable with that, **don't install the watch companion.**
-> If your watch is lost or stolen, you can **revoke the key from the phone app**, which
-> kills it with the car and renders the watch useless.
+> ⌚ **The Wear OS companion copies the digital key onto your watch** — only once you turn
+> on **Watch key** in the phone's Key tab (off by default), and only to a watch with a screen
+> lock. That means **anyone with access to your unlocked watch has a working key to your car**.
+> If you're not comfortable with that, leave Watch key off. Turning it off removes the key from
+> the watch; if your watch is lost or stolen, you can also **revoke the key from the phone app**,
+> which kills it with the car and renders the watch useless.
 
 ## Credits & thanks 🙏
 
@@ -167,6 +168,11 @@ unlocks, NEAR→FAR locks — issuing **real DK lock/unlock** over the working B
 session. Screen-off approach is handled by a **hardware-offloaded presence scan**
 (zero-CPU wake, filtered on the car's advertised service UUID + manufacturer data),
 so the phone can wake and connect as you walk up without draining the battery.
+
+**Reporting a problem at the car:** turn on **Settings › Diagnostics › Record diagnostics**, use the car
+as usual (note the time when something goes wrong), then tap **Share**. The file holds the key /
+Bluetooth / proximity timeline (up to 48 h, across restarts) with a summary; no key material, passwords
+or tokens, and the VIN is masked.
 
 ## Project structure
 

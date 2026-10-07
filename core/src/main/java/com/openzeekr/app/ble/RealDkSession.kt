@@ -1,5 +1,6 @@
 package com.openzeekr.app.ble
 
+import com.openzeekr.app.util.DiagRecorder
 import com.openzeekr.app.util.Logx
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -7,12 +8,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayInputStream
 import java.security.KeyPair
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.ConcurrentHashMap
+
+/** How long a recorded 0x1012 handshake stays on the link to capture the car's next frames. */
+private const val RECONNECT_LISTEN_MS = 1_500L
 
 /**
  * Real Zeekr DK BLE session — pure Kotlin, no native libs.
@@ -57,6 +63,8 @@ class RealDkSession(
         private set
 
     private var cryptoReady = false
+    /** When the last ESTABLISHED session ended (0 = none yet in this process); diagnostics only. */
+    @Volatile private var lastSessionEndedAtMs = 0L
     private lateinit var sKey: ByteArray   // 16
     private lateinit var iv: ByteArray     // 12
     private lateinit var ephemeral: KeyPair
@@ -74,6 +82,11 @@ class RealDkSession(
     // How long [control] waits for the optional 0x0112 result after the 0x0111 receipt ack.
     private val RESULT_WINDOW_MS = 600L
 
+    // Serializes every 0x0110 exchange ([ping], [control], [probeControl]). The car's 0x0111/0x0112
+    // replies carry no request id, so with two in flight one command's reply is credited to the other
+    // (e.g. the ping's RPA-start reject read as the unlock's result).
+    private val controlMutex = Mutex()
+
     // DEBUG: when set (during [probeControl]), every decrypted inbound frame is also handed here so
     // the probe can log exactly what the car sends back (opcode + body). Null in normal operation.
     @Volatile private var probeSink: ((Int, ByteArray) -> Unit)? = null
@@ -83,12 +96,23 @@ class RealDkSession(
 
     init { transport.onInbound(::onRawInbound) }
 
+    /** Unit-test seam: mark the session established with known GCM keys, skipping the BLE handshake. */
+    @androidx.annotation.VisibleForTesting
+    internal fun primeEstablishedForTest(sKey: ByteArray, iv: ByteArray) {
+        this.sKey = sKey; this.iv = iv
+        cryptoReady = true; isEstablished = true
+    }
+
     // ---------------- handshake ----------------
 
     override suspend fun establish() {
         if (isEstablished) return
         val cred = credentialProvider()
             ?: throw IllegalStateException("no DK credential provisioned (enrol + key-info first)")
+        // Diagnostic context for the reply to come: a 0x1012 ("already authenticated") may depend on how
+        // recently the car saw our previous session.
+        Logx.d("dk", "handshake start - " + if (lastSessionEndedAtMs == 0L) "no earlier session in this process"
+            else "previous session ended ${(System.currentTimeMillis() - lastSessionEndedAtMs) / 1000}s ago")
         DkPayload.resetSeq()
         cryptoReady = false
 
@@ -179,8 +203,16 @@ class RealDkSession(
 
         // A reconnect (0x1012) skips the cert exchange and goes straight to the factor
         // exchange. We can't reach it until first-pair works, so fail explicitly for now.
-        if (!firstPair) throw IllegalStateException(
-            "DK reconnect (0x1012 authenticated) flow not implemented yet — expected first-pair (0x1011)")
+        if (!firstPair) {
+            // While diagnostics are being recorded, stay on the link a moment to capture whatever the car
+            // sends after 0x1012 (every inbound frame is logged in onRawInbound) - input for the reconnect flow.
+            if (DiagRecorder.isRecording) {
+                Logx.w("dk", "0x1012: recording - listening ${RECONNECT_LISTEN_MS}ms for what the car sends next")
+                delay(RECONNECT_LISTEN_MS)
+            }
+            throw IllegalStateException(
+                "DK reconnect (0x1012 authenticated) flow not implemented yet — expected first-pair (0x1011)")
+        }
 
         // 1) mutual cert exchange (cleartext during pairing)
         Logx.d("dk", "handshake 1/5 cert exchange …")
@@ -319,10 +351,19 @@ class RealDkSession(
         return send(cmd, payload)
     }
 
-    override suspend fun ping(timeoutMs: Long): Boolean {
+    override suspend fun ping(timeoutMs: Long): Boolean = controlMutex.withLock { pingExclusive(timeoutMs) }
+
+    private suspend fun pingExclusive(timeoutMs: Long): Boolean {
         if (!isEstablished || !cryptoReady) return false
         val waiter = CompletableDeferred<Int>()
+        // The probe owns its own receipt/result slots and drains them before [controlMutex] is released:
+        // the car answers it with 0x0111 and then a 0x0112 reject, and a reject that outlived the ping
+        // would otherwise be read as the NEXT control's result.
+        val recv = CompletableDeferred<ByteArray>()
+        val result = CompletableDeferred<ByteArray>()
         pingWaiter = waiter
+        pending[DkProtocol.CMD_V2A_CMD_RECEIVED] = recv
+        pending[DkProtocol.CMD_V2A_RESULT] = result
         return try {
             // Liveness via a CONTROL frame the car ALWAYS acks but never acts on: 0x0110 carrying the
             // RPA-start sub-opcode (0x0A). The car replies 0x0111 (received)/0x0112 (result) and
@@ -333,15 +374,22 @@ class RealDkSession(
             if (!ok) { Logx.w("dk", "ping: 0x0110 write failed"); return false }
             val reply = withTimeoutOrNull(timeoutMs) { waiter.await() }
             Logx.d("dk", "ping 0x0110/0x0a -> ${reply?.let { hex(it) } ?: "no reply in ${timeoutMs}ms"}")
+            if (reply != null && withTimeoutOrNull(timeoutMs) { recv.await() } != null) {
+                withTimeoutOrNull(RESULT_WINDOW_MS) { result.await() }
+            }
             reply != null
         } catch (e: Exception) {
             Logx.w("dk", "ping error: ${e.message}"); false
         } finally {
             pingWaiter = null
+            pending.remove(DkProtocol.CMD_V2A_CMD_RECEIVED, recv); pending.remove(DkProtocol.CMD_V2A_RESULT, result)
         }
     }
 
-    override suspend fun control(ctrl: Byte, timeoutMs: Long): ControlResult {
+    override suspend fun control(ctrl: Byte, timeoutMs: Long): ControlResult =
+        controlMutex.withLock { controlExclusive(ctrl, timeoutMs) }
+
+    private suspend fun controlExclusive(ctrl: Byte, timeoutMs: Long): ControlResult {
         if (!isEstablished || !cryptoReady) return ControlResult.WRITE_FAILED
         val recv = CompletableDeferred<ByteArray>()
         val result = CompletableDeferred<ByteArray>()
@@ -370,11 +418,14 @@ class RealDkSession(
         } catch (e: Exception) {
             Logx.w("dk", "control error: ${e.message}"); ControlResult.WRITE_FAILED
         } finally {
-            pending.remove(DkProtocol.CMD_V2A_CMD_RECEIVED); pending.remove(DkProtocol.CMD_V2A_RESULT)
+            pending.remove(DkProtocol.CMD_V2A_CMD_RECEIVED, recv); pending.remove(DkProtocol.CMD_V2A_RESULT, result)
         }
     }
 
-    override suspend fun probeControl(ctrl: Byte, windowMs: Long): String {
+    override suspend fun probeControl(ctrl: Byte, windowMs: Long): String =
+        controlMutex.withLock { probeExclusive(ctrl, windowMs) }
+
+    private suspend fun probeExclusive(ctrl: Byte, windowMs: Long): String {
         if (!isEstablished || !cryptoReady) return "session not ready"
         val seen = java.util.Collections.synchronizedList(mutableListOf<String>())
         probeSink = { cmd, body ->
@@ -418,6 +469,7 @@ class RealDkSession(
      * keys) but leaves the transport handler live so the re-handshake still receives frames.
      */
     fun reset() {
+        if (isEstablished) lastSessionEndedAtMs = System.currentTimeMillis()
         isEstablished = false; cryptoReady = false; cmacKeyCache = null
         // Stop the positioning beacon - the session is gone, so the advert must go with it.
         runCatching { transport.stopPositioningBeacon() }
@@ -580,7 +632,7 @@ class RealDkSession(
         // RPA frames append AES-CMAC(cmacKey, ts(4 BE) ‖ tail)[0:6] inside the GCM plaintext.
         val fullTail = if (DkProtocol.needsCmac(cmdId)) tail + DkCrypto.aesCmac6(cmacKey(), tsBytes(ts) + tail) else tail
         val plain = DkPayload.wrap(nSeq, ts, fullTail)
-        Logx.d("dkframe", "-> ${hex(cmdId)} plain(${plain.size})=${hexOf(plain)}")
+        Logx.d("dkframe", "-> ${hex(cmdId)} plain(${plain.size})=${DkFrameLog.plain(cmdId, plain)}")
         val body = if (DkProtocol.isEncrypted(cmdId)) DkCrypto.gcmEncrypt(sKey, iv, plain) else plain
         val frame = DkFrame(cmdId, instTypeFor(cmdId), body).encode()
         return transport.write(cmdId, frame)
@@ -618,7 +670,7 @@ class RealDkSession(
         try {
             // DIAG (frame-diff vs stock): log the exact plaintext we send, so we can byte-compare every
             // handshake/calibration frame against a stock capture and find any clean-room divergence.
-            Logx.d("dkframe", "-> ${hex(cmdId)} plain(${plainBody.size})=${hexOf(plainBody)}")
+            Logx.d("dkframe", "-> ${hex(cmdId)} plain(${plainBody.size})=${DkFrameLog.plain(cmdId, plainBody)}")
             val body = if (encrypt) DkCrypto.gcmEncrypt(sKey, iv, plainBody) else plainBody
             val frame = DkFrame(cmdId, instTypeFor(cmdId), body).encode()
             if (!transport.write(cmdId, frame)) throw IllegalStateException("write failed for cmd ${hex(cmdId)}")
@@ -642,7 +694,7 @@ class RealDkSession(
         }
         // DIAG (frame-diff vs stock): log every inbound frame's plaintext to byte-compare against a stock
         // capture (esp. 0x0102 DK_STATUS, 0x010c DK_VERIFY, and whether/what 0x0138 the car sends us).
-        Logx.d("dkframe", "<- ${hex(cmdId)} plain(${body.size})=${hexOf(body)}")
+        Logx.d("dkframe", "<- ${hex(cmdId)} plain(${body.size})=${DkFrameLog.plain(cmdId, body)}")
         // DIAGNOSTIC: 0x182 is the car's BNCM ranging telemetry (its measurement of THIS phone). It is
         // fire-and-forget (no reply, like stock), but decrypting it with the session key shows what the
         // car actually measures per calibration position - to tell whether the in-cabin finalize fails

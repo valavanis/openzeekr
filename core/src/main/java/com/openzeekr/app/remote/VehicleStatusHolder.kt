@@ -20,7 +20,12 @@ import kotlinx.coroutines.launch
 class VehicleStatusHolder(
     private val control: RemoteControlRepository,
     private val scope: CoroutineScope,
+    /** VIN of the active car; the status shown always belongs to it. */
+    private val activeVin: () -> String,
 ) {
+    // The car [state] belongs to. Switching cars clears it, so a failing status call for the new car
+    // can't leave the previous car's lock state, battery and position on screen under the new name.
+    @Volatile private var dataVin: String? = null
     private val _state = MutableStateFlow<VehicleStatusBean?>(null)
     val state: StateFlow<VehicleStatusBean?> = _state.asStateFlow()
 
@@ -61,8 +66,14 @@ class VehicleStatusHolder(
     fun stop() { job?.cancel(); job = null; burstJob?.cancel(); burstJob = null }
 
     suspend fun refresh() {
-        when (val r = control.status()) {
-            is CallResult.Ok -> { logStateTransitions(r.value); _state.value = r.value; lastError = null }
+        val vin = activeVin()
+        if (vin != dataVin) { dataVin = vin; _state.value = null; prevLock = null; prevTrunk = null }
+        when (val r = control.status(vin = vin)) {
+            is CallResult.Ok -> {
+                // Drop a response that landed after the user switched to another car.
+                if (activeVin() != vin) return
+                logStateTransitions(r.value); _state.value = r.value; lastError = null
+            }
             is CallResult.Err -> lastError = r.message
         }
     }

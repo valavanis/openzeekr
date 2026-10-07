@@ -19,7 +19,15 @@ data class BaseResponse<T>(
     val success: Boolean = false,
     val sessionId: String? = null,
     val data: T? = null,
-)
+) {
+    /** Success = the success flag, the standard "000000" code, or no code at all. Only a response that is
+     *  not successful AND carries another code is a business error (HTTP 200 envelopes can carry one). */
+    val isOk: Boolean get() = success || code == null || code == "000000"
+
+    /** The server's text for a failed response, else "[fallback] (code=…)". */
+    fun errorText(fallback: String): String =
+        msg?.takeIf { it.isNotBlank() } ?: message?.takeIf { it.isNotBlank() } ?: "$fallback (code=$code)"
+}
 
 /**
  * Vehicle connectivity data-plan usage (the car's eSIM, "traffic volume"), from

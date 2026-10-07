@@ -74,6 +74,7 @@ fun OnboardingScreen(deps: Deps, onDone: () -> Unit) {
     val safeIdx = idx.coerceIn(0, steps.lastIndex)
     val step = steps[safeIdx]
     val loggedIn = cfg.accessToken.isNotBlank()
+    val provStep = deps.provisioning.state.collectAsState().value.step
 
     fun next() { if (safeIdx < steps.lastIndex) idx = safeIdx + 1 else onDone() }
     fun back() { if (safeIdx > 0) idx = safeIdx - 1 }
@@ -119,8 +120,9 @@ fun OnboardingScreen(deps: Deps, onDone: () -> Unit) {
                     OnbStep.LOGIN -> Button(onClick = ::next, enabled = loggedIn) { Text("Next") }
                     OnbStep.KEY -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = onDone) { Text("Skip for now") }
-                        Button(onClick = onDone, enabled = deps.dkIdentity.isProvisioned ||
-                            deps.provisioning.state.value.step == DkProvisioning.Step.DONE) { Text("Finish") }
+                        // Observed state (not a one-off .value read), so Finish enables the moment setup completes.
+                        Button(onClick = onDone, enabled = provStep == DkProvisioning.Step.DONE ||
+                            deps.dkIdentity.isProvisioned) { Text("Finish") }
                     }
                 }
             }
@@ -314,7 +316,6 @@ private fun LoginStep(deps: Deps) {
 @Composable
 private fun KeyStep(deps: Deps) {
     val prov by deps.provisioning.state.collectAsState()
-    val scope = rememberCoroutineScope()
     val provisioned = deps.dkIdentity.isProvisioned || prov.step == DkProvisioning.Step.DONE
     val busy = prov.step == DkProvisioning.Step.CERT || prov.step == DkProvisioning.Step.BIND ||
         prov.step == DkProvisioning.Step.KEY_LIST || prov.step == DkProvisioning.Step.KEY_INFO
@@ -337,7 +338,8 @@ private fun KeyStep(deps: Deps) {
                         enabled = !busy,
                         onClick = {
                             // Owner vs shared comes from the vehicle-list captured at login.
-                            scope.launch { deps.provisioning.provision(owner = deps.config.current().isOwner) }
+                            // App scope: "Skip for now" / Back / rotation must not abort a half-done run.
+                            deps.provisioning.start(owner = deps.config.current().isOwner)
                         },
                     ) {
                         if (busy) Row(

@@ -82,6 +82,13 @@ class ZeekrFcmService : FirebaseMessagingService() {
             Logx.d(TAG, "silent push (showBanner=$showBanner, no content) — not notifying")
             return
         }
+        // Signed out (or a different user on this phone): never surface the previous account's car
+        // alerts, e.g. if the logout unregister didn't reach the message centre.
+        val cfg = com.openzeekr.app.config.ConfigStore.get(applicationContext).current()
+        if (cfg.accessToken.isBlank() && cfg.azureToken.isBlank()) {
+            Logx.d(TAG, "push while signed out — not notifying")
+            return
+        }
 
         CarNotifier.notify(
             this,

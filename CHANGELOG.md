@@ -3,6 +3,48 @@
 All notable changes to OpenZeekr are recorded here. OpenZeekr is a free, non-commercial
 clean-room app and is not affiliated with Zeekr.
 
+## [Unreleased]
+
+### Added
+- **Diagnostics recording** (Settings › Diagnostics). Turn it on, use the car as usual for up to 48 hours,
+  then **Share** one text file to report a problem such as "connected but didn't unlock". It keeps the
+  key, Bluetooth and approach-unlock timeline across app restarts, with a summary at the top. It never
+  contains the digital key, passwords or tokens, and the VIN is masked.
+
+### Fixed
+- **Approach unlock that connected but never unlocked.** After a walk-away where the key link dropped
+  quietly (the usual case when you leave the car unlocked by approach), the next approach that connected
+  close to the car stayed latched as "already unlocked this visit" and never unlocked. A confirmed
+  departure now re-arms the next approach.
+- **Long "connecting" when returning to the car.** The car changes its Bluetooth address over time; after
+  a long absence the app kept reconnecting to the old address (about 30 s per attempt, repeatedly) instead
+  of picking up the current one. It now reconnects to the car's current address straight away.
+- **Unlock read as rejected at the door.** The background link check and the unlock could overlap, and
+  the check's answer was taken as the unlock's, so a good unlock looked rejected and the link was
+  rebuilt before retrying. They no longer overlap.
+- **Stuck in "connecting" after a failed key handshake.** A failed handshake now closes the link, so the
+  next attempt can start instead of waiting for the car to drop it.
+- **Unlock tapped while the key is connecting** now waits a few seconds for the key instead of going
+  straight to the slower cloud command.
+- **Crash when sending a place to the car** from a map pin or "Navigate with" (geo: links), and a crash
+  (on every launch) after clearing the gateway field in Settings.
+- **Remove key** now really stops the key on this phone, and a watch that was off or out of range drops
+  its copy as soon as it reconnects. The digital key no longer appears in debug logs.
+- **Sign out** now finishes even though it switches tabs, clears every session token, and unregisters
+  car alerts for the account.
+- **Lock state** shows "—" when unknown instead of "Locked".
+- **Switching cars**: schedules, security, location and updates now follow the selected car, and the
+  key only acts over Bluetooth on the car it belongs to.
+- **Watch on Wear OS 3** can find the car again.
+
+### Changed
+- **Watch key is now opt-in.** The phone gives its digital key to your watch only after you turn on
+  **Watch key** in the Key tab, and the watch only accepts it with a screen lock set. After updating,
+  a watch that already had the key drops it until you turn Watch key on.
+- **Approach unlock is safer.** It never unlocks from further out than the -65 dBm safety limit, whatever
+  the sensitivity, and it needs you to have actually walked up: a phone lying still next to the car (e.g.
+  the app restarting overnight with the car in the garage) no longer unlocks it.
+
 ## [0.2] - 2026-10-02
 
 ### Added

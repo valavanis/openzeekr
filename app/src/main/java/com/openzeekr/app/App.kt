@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.os.Bundle
 import com.openzeekr.app.net.AccountLogin
+import com.openzeekr.app.util.DiagRecorder
 import com.openzeekr.app.util.Logx
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,6 +20,9 @@ class App : Application(), DepsHolder {
 
     override fun onCreate() {
         super.onCreate()
+        // First, so a recording that is still in its window also captures the startup below.
+        DiagRecorder.init(this)
+        Logx.d("diag", "=== process start ===")
         deps = Deps(this)
         registerActivityLifecycleCallbacks(ForegroundTracker())
     }
@@ -54,7 +58,7 @@ class App : Application(), DepsHolder {
         private var started = 0
         override fun onActivityStarted(activity: Activity) {
             started++
-            if (started == 1) { AppForeground.isForeground = true; startHeartbeat() }
+            if (started == 1) { AppForeground.isForeground = true; startHeartbeat(); deps.checkForUpdateOnce() }
         }
         override fun onActivityStopped(activity: Activity) {
             started = (started - 1).coerceAtLeast(0)

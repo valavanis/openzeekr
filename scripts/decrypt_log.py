@@ -47,8 +47,21 @@ def _unwrap_aes_key(wrapped: bytes, private_key_pem: bytes) -> bytes:
     )
 
 
+def _b64decode(blob_b64: str, allow_truncated: bool) -> bytes:
+    s = "".join(blob_b64.split())
+    if allow_truncated:
+        # A cut-off paste rarely ends on a 4-char base64 boundary, and b64decode rejects it before the
+        # CTR recovery below could run. Re-pad a 2/3-char tail; a 1-char tail carries no full byte.
+        rem = len(s) % 4
+        if rem == 1:
+            s = s[:-1]
+        elif rem:
+            s += "=" * (4 - rem)
+    return base64.b64decode(s)
+
+
 def decrypt(blob_b64: str, private_key_pem: bytes, allow_truncated: bool = False) -> str:
-    raw = base64.b64decode(blob_b64.strip())
+    raw = _b64decode(blob_b64, allow_truncated)
     if raw[:2] != MAGIC:
         raise ValueError("bad magic - not an OpenZeekr log blob")
     version = raw[2]

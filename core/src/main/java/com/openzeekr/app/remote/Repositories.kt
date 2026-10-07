@@ -77,12 +77,18 @@ class RemoteControlRepository(private val store: ConfigStore, private val client
     private data class VehicleConfigInfo(val colorName: String, val seriesName: String)
 
     /** Fire a catalog command. Physical-actuation ids (RDU_2/RDL_2/RDO/RDC) route through
-     *  the ecarx device-api transport (System B); everything else through /ms-remote-control. */
-    suspend fun send(cmd: Command, extraParams: List<ServiceParameter> = emptyList()): CallResult<RemoteControlResponse> =
+     *  the ecarx device-api transport (System B); everything else through /ms-remote-control.
+     *  [vin] targets a car other than the active one (null = the active car). */
+    suspend fun send(
+        cmd: Command,
+        extraParams: List<ServiceParameter> = emptyList(),
+        vin: String? = null,
+    ): CallResult<RemoteControlResponse> =
         withContext(Dispatchers.IO) {
             guarded {
                 val cfg = store.current()
-                require(cfg.vin.isNotBlank()) { "VIN not configured" }
+                val targetVin = vin ?: cfg.vin
+                require(targetVin.isNotBlank()) { "VIN not configured" }
                 // The vehicle only executes remote commands for the account's ONLINE
                 // device. Stock heartbeats app/hb continuously; refresh our online
                 // status right before the command so the TSP doesn't reject execution
@@ -92,18 +98,22 @@ class RemoteControlRepository(private val store: ConfigStore, private val client
                     // Charging (limit / start / stop) is its OWN service — ms-charge-manage, NOT
                     // ms-remote-control. Same body shape; different path. Routing RCS through
                     // ms-remote-control was the "charge setting returns error". (Captured 2026-09-16.)
-                    val resp = client.api.sendChargeControl(cmd.toRequest(extraParams = extraParams))
-                    resp.data ?: error(resp.message ?: "charge command failed (code=${resp.code})")
+                    val resp = client.api.sendChargeControl(cmd.toRequest(extraParams = extraParams), vin)
+                    if (!resp.isOk) error(resp.errorText("charge command failed"))
+                    resp.data ?: RemoteControlResponse(serviceId = cmd.serviceId, status = "ok")
                 } else if (cmd.usesSystemB) {
                     // Flat body, PUT /remote-control/vehicle/telematics/{vin}, ecarx success sentinel.
-                    val resp = client.api.ecarxControl(cfg.vin, cmd.toEcarxRequest(cfg.userId, extraParams))
+                    val resp = client.api.ecarxControl(targetVin, cmd.toEcarxRequest(cfg.userId, extraParams), vin)
                     if (!resp.ok) error(resp.message ?: "command failed (code=${resp.code})")
                     resp.data ?: RemoteControlResponse(serviceId = cmd.serviceId, status = "ok")
                 } else {
                     // Body = command/serviceId/setting{serviceParameters,...}; the account is
                     // identified by the bearer token + X-VIN header, not a body field.
-                    val resp = client.api.sendControl(cmd.toRequest(extraParams = extraParams))
-                    resp.data ?: error(resp.message ?: "command failed (code=${resp.code})")
+                    val resp = client.api.sendControl(cmd.toRequest(extraParams = extraParams), vin)
+                    // The envelope decides, not the payload: an HTTP 200 can carry a business error (e.g.
+                    // 037005) WITH a data object, and an accepted command can come back without one.
+                    if (!resp.isOk) error(resp.errorText("command failed"))
+                    resp.data ?: RemoteControlResponse(serviceId = cmd.serviceId, status = "ok")
                 }
             }
         }
@@ -123,13 +133,14 @@ class RemoteControlRepository(private val store: ConfigStore, private val client
      * A plain GET already returns real data; we heartbeat first (as with [send]) so
      * the cloud has us marked ONLINE and returns a fresh snapshot. VIN rides in the
      * X-VIN header; the query params (latest=false, target=new) mirror the stock app.
+     * [vin] targets a car other than the active one (null = the active car).
      */
-    suspend fun status(): CallResult<VehicleStatusBean> = withContext(Dispatchers.IO) {
+    suspend fun status(vin: String? = null): CallResult<VehicleStatusBean> = withContext(Dispatchers.IO) {
         guarded {
             val cfg = store.current()
-            require(cfg.vin.isNotBlank()) { "VIN not configured" }
+            require((vin ?: cfg.vin).isNotBlank()) { "VIN not configured" }
             runCatching { com.openzeekr.app.net.AccountLogin(store).heartbeat() }
-            val resp = client.api.vehicleStatus()
+            val resp = client.api.vehicleStatus(targetVin = vin)
             val obj = resp.data ?: error(resp.message ?: "status failed (code=${resp.code})")
             // PII-safe: log only the key STRUCTURE (names, never values like VIN/GPS/SOC) so an
             // unexpected shape can be diagnosed. The schema is static across polls, so log it only
@@ -423,7 +434,7 @@ class OtaRepository(private val store: ConfigStore, private val client: ApiClien
                 val st = check()
                 val assignId = requireNotNull(st.availableAssignmentId) { "No assignment to install" }
                 val orderId = requireNotNull(st.installationOrderId) { "No installation order" }
-                client.api.otaInstallation(
+                val r = client.api.otaInstallation(
                     "$base/overseas-app/ota/os/installation",
                     com.openzeekr.app.net.model.OtaInstallRequest(
                         availableAssignmentId = assignId,
@@ -436,6 +447,8 @@ class OtaRepository(private val store: ConfigStore, private val client: ApiClien
                         vehicleVin = vin,
                     ),
                 )
+                // A rejected install (e.g. 3000013 on a shared account) must not read as accepted.
+                if (!r.isOk) error(r.errorText("the install was rejected by the server"))
                 check()   // re-read so the UI reflects INSTALLATION-CONSENT-* immediately
             }
         }
@@ -468,7 +481,7 @@ class OtaRepository(private val store: ConfigStore, private val client: ApiClien
             val st = check()
             val assignId = requireNotNull(st.availableAssignmentId) { "No assignment to cancel" }
             val orderId = requireNotNull(st.installationOrderId) { "No installation order" }
-            client.api.otaCancel(
+            val r = client.api.otaCancel(
                 "$base/overseas-app/ota/os/cancel",
                 com.openzeekr.app.net.model.OtaCancelRequest(
                     availableAssignmentId = assignId,
@@ -479,6 +492,7 @@ class OtaRepository(private val store: ConfigStore, private val client: ApiClien
                     vehicleVin = vin,
                 ),
             )
+            if (!r.isOk) error(r.errorText("the cancel was rejected by the server"))
             check()
         }
     }
