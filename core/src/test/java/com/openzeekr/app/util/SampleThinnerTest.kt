@@ -25,6 +25,16 @@ class SampleThinnerTest {
     }
 
     @Test
+    fun theCarsRangingPushIsKeptOncePerInterval() {
+        val t = SampleThinner(intervalMs = 1_000)
+        val frames = (0L..1_000L step 250).filter { t.keep(it, "dkframe", "<- 0x0182 plain(12)=00112233") }
+        val decoded = (0L..1_000L step 250).filter { t.keep(it, "dk", "0x182 ranging: plaintext=0011 raw=aabb") }
+        assertEquals(listOf(0L, 1_000L), frames)
+        assertEquals(listOf(0L, 1_000L), decoded)
+        assertTrue(t.keep(10, "dkframe", "<- 0x0111 plain(8)=0102"))
+    }
+
+    @Test
     fun everyOtherLineIsKept() {
         val t = SampleThinner(intervalMs = 1_000)
         assertTrue(t.keep(0, "prox", sample("NEAR")))
