@@ -20,20 +20,30 @@ import java.util.UUID
  */
 class KickoutInterceptor(private val store: ConfigStore) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
+        // The token this request goes out with (HeaderInterceptor, next in the chain, reads the same one).
+        val sentWith = store.current().accessToken
         val resp = chain.proceed(chain.request())
         if (resp.code == 401) {
             val body = runCatching { resp.peekBody(1024).string() }.getOrNull()
             if (body?.contains("079021") == true) {
                 Logx.w("session", "079021 account logged in elsewhere — signing out")
-                if (store.current().accessToken.isNotBlank()) store.update { it.copy(accessToken = "") }
-                SessionSignal.loggedInElsewhere.value = true
+                if (clearIfStillCurrent(sentWith)) SessionSignal.loggedInElsewhere.value = true
             } else if (body?.contains("079012") == true) {
                 Logx.w("session", "079012 token expired — clearing session, prompting re-login")
-                if (store.current().accessToken.isNotBlank()) store.update { it.copy(accessToken = "") }
-                SessionSignal.sessionExpired.value = true
+                if (clearIfStillCurrent(sentWith)) SessionSignal.sessionExpired.value = true
             }
         }
         return resp
+    }
+
+    /** Clear the token only if it is still the one the rejected request used: a slow call made with an
+     *  old token must not wipe a session the user has signed in to since. Returns true if cleared. */
+    private fun clearIfStillCurrent(sentWith: String): Boolean {
+        var cleared = false
+        store.update {
+            if (it.accessToken.isNotBlank() && it.accessToken == sentWith) { cleared = true; it.copy(accessToken = "") } else it
+        }
+        return cleared
     }
 }
 

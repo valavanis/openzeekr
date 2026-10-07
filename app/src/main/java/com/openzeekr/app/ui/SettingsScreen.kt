@@ -325,8 +325,9 @@ fun SettingsScreen(deps: Deps, modifier: Modifier = Modifier) {
                         // Revoke + wipe the DK (cloud remove + local wipe + purge watch), then the account.
                         runCatching { deps.provisioning.removeKey() }
                         runCatching { com.openzeekr.app.wear.PhoneKeyPush.purgeWatches(ctx) }
-                        // Unregister our FCM push token from the message-centre before clearing the account.
-                        runCatching { deps.push.disableOnLogout() }
+                        // Unregister our FCM push token from the message-centre BEFORE clearing the account:
+                        // the request authenticates with the tokens signOut() wipes (awaited, bounded).
+                        deps.push.disableOnLogout()
                         store.signOut()
                         cfg = store.current(); deps.onEndpointChanged(); status = "Signed out."
                     }
@@ -465,7 +466,7 @@ private fun SecretsSection(cfg: SecretsConfig, set: ((SecretsConfig) -> SecretsC
 private fun importExport(store: com.openzeekr.app.config.ConfigStore, onChanged: () -> Unit) {
     var importText by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
-    val clipboard = LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     SettingsCard {
         CardTitle("Import / Export")
         OutlinedTextField(
@@ -474,15 +475,29 @@ private fun importExport(store: com.openzeekr.app.config.ConfigStore, onChanged:
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { msg = store.importJson(importText).fold({ onChanged(); "Imported." }, { "Import failed: ${it.message}" }) }) { Text("Import") }
-            // Export copies to the clipboard instead of rendering the secrets on screen - the config
-            // holds your password, tokens and keys, and an on-screen dump is a shoulder-surf/screenshot leak.
+            // Export copies to the clipboard instead of rendering the secrets on screen (an on-screen dump
+            // is a shoulder-surf/screenshot leak). The export holds the app keys (never the password or
+            // session tokens), so the clip is flagged sensitive: Android 13+ then hides it from clipboard
+            // previews and keyboard clipboard history.
             OutlinedButton(onClick = {
-                clipboard.setText(AnnotatedString(store.exportJson()))
-                msg = "Copied to clipboard - it contains your password, tokens and keys, so paste it somewhere safe."
+                copySensitive(context, "OpenZeekr config", store.exportJson())
+                msg = "Copied to clipboard - it contains your app keys, so paste it somewhere safe."
             }) { Text("Export to clipboard") }
         }
         if (msg.isNotBlank()) Text(msg, color = Brand.muted, fontSize = 12.sp)
     }
+}
+
+/** Copy [text] as a clip flagged sensitive (EXTRA_IS_SENSITIVE, honoured on Android 13+). */
+private fun copySensitive(context: android.content.Context, label: String, text: String) {
+    val cm = context.getSystemService(android.content.ClipboardManager::class.java) ?: return
+    val clip = android.content.ClipData.newPlainText(label, text)
+    clip.description.extras = android.os.PersistableBundle().apply {
+        // ClipDescription.EXTRA_IS_SENSITIVE (API 33); the literal keeps it buildable at compileSdk 34
+        // without an API-level guard - older releases just ignore the extra.
+        putBoolean("android.content.extra.IS_SENSITIVE", true)
+    }
+    cm.setPrimaryClip(clip)
 }
 
 @Composable

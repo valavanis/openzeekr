@@ -174,9 +174,11 @@ class AccountLogin(private val store: ConfigStore) {
                 // this SignInterceptor). Without X-SIGNATURE the server returns 1440 "验签签名不存在".
                 val bodyStr = buildJsonObject { put("authCode", xAuthCode) }.toString()
                 val ts = System.currentTimeMillis().toString()
+                // Blank xchanger key: fall back to prod_secret, the same value per the note above. (The old
+                // fallback returned the blank value itself, so HMAC threw "Empty key" and step 4b always failed.)
                 val hfKey = cfg.xchangerSignSecret.ifBlank {
-                    Logx.w("login", "step 4b: xchanger_sign_secret not set — signature will fail (add it to secrets)")
-                    cfg.xchangerSignSecret
+                    Logx.w("login", "step 4b: xchanger_sign_secret not set — signing with prod_secret (same value on EU)")
+                    cfg.prodSecret
                 }
                 val sig = hfSign(
                     signSecret = hfKey,
