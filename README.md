@@ -169,6 +169,11 @@ session. Screen-off approach is handled by a **hardware-offloaded presence scan*
 (zero-CPU wake, filtered on the car's advertised service UUID + manufacturer data),
 so the phone can wake and connect as you walk up without draining the battery.
 
+**Reporting a problem at the car:** turn on **Settings › Diagnostics › Record diagnostics**, use the car
+as usual (note the time when something goes wrong), then tap **Share**. The file holds the key /
+Bluetooth / proximity timeline (up to 48 h, across restarts) with a summary; no key material, passwords
+or tokens, and the VIN is masked.
+
 ## Project structure
 
 ```

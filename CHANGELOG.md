@@ -5,6 +5,12 @@ clean-room app and is not affiliated with Zeekr.
 
 ## [Unreleased]
 
+### Added
+- **Diagnostics recording** (Settings › Diagnostics). Turn it on, use the car as usual for up to 48 hours,
+  then **Share** one text file to report a problem such as "connected but didn't unlock". It keeps the
+  key, Bluetooth and approach-unlock timeline across app restarts, with a summary at the top. It never
+  contains the digital key, passwords or tokens, and the VIN is masked.
+
 ### Fixed
 - **Approach unlock that connected but never unlocked.** After a walk-away where the key link dropped
   quietly (the usual case when you leave the car unlocked by approach), the next approach that connected

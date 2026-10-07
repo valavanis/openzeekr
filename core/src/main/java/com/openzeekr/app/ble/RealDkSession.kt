@@ -1,5 +1,6 @@
 package com.openzeekr.app.ble
 
+import com.openzeekr.app.util.DiagRecorder
 import com.openzeekr.app.util.Logx
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -15,6 +16,9 @@ import java.security.KeyPair
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.ConcurrentHashMap
+
+/** How long a recorded 0x1012 handshake stays on the link to capture the car's next frames. */
+private const val RECONNECT_LISTEN_MS = 1_500L
 
 /**
  * Real Zeekr DK BLE session — pure Kotlin, no native libs.
@@ -59,6 +63,8 @@ class RealDkSession(
         private set
 
     private var cryptoReady = false
+    /** When the last ESTABLISHED session ended (0 = none yet in this process); diagnostics only. */
+    @Volatile private var lastSessionEndedAtMs = 0L
     private lateinit var sKey: ByteArray   // 16
     private lateinit var iv: ByteArray     // 12
     private lateinit var ephemeral: KeyPair
@@ -103,6 +109,10 @@ class RealDkSession(
         if (isEstablished) return
         val cred = credentialProvider()
             ?: throw IllegalStateException("no DK credential provisioned (enrol + key-info first)")
+        // Diagnostic context for the reply to come: a 0x1012 ("already authenticated") may depend on how
+        // recently the car saw our previous session.
+        Logx.d("dk", "handshake start - " + if (lastSessionEndedAtMs == 0L) "no earlier session in this process"
+            else "previous session ended ${(System.currentTimeMillis() - lastSessionEndedAtMs) / 1000}s ago")
         DkPayload.resetSeq()
         cryptoReady = false
 
@@ -193,8 +203,16 @@ class RealDkSession(
 
         // A reconnect (0x1012) skips the cert exchange and goes straight to the factor
         // exchange. We can't reach it until first-pair works, so fail explicitly for now.
-        if (!firstPair) throw IllegalStateException(
-            "DK reconnect (0x1012 authenticated) flow not implemented yet — expected first-pair (0x1011)")
+        if (!firstPair) {
+            // While diagnostics are being recorded, stay on the link a moment to capture whatever the car
+            // sends after 0x1012 (every inbound frame is logged in onRawInbound) - input for the reconnect flow.
+            if (DiagRecorder.isRecording) {
+                Logx.w("dk", "0x1012: recording - listening ${RECONNECT_LISTEN_MS}ms for what the car sends next")
+                delay(RECONNECT_LISTEN_MS)
+            }
+            throw IllegalStateException(
+                "DK reconnect (0x1012 authenticated) flow not implemented yet — expected first-pair (0x1011)")
+        }
 
         // 1) mutual cert exchange (cleartext during pairing)
         Logx.d("dk", "handshake 1/5 cert exchange …")
@@ -451,6 +469,7 @@ class RealDkSession(
      * keys) but leaves the transport handler live so the re-handshake still receives frames.
      */
     fun reset() {
+        if (isEstablished) lastSessionEndedAtMs = System.currentTimeMillis()
         isEstablished = false; cryptoReady = false; cmacKeyCache = null
         // Stop the positioning beacon - the session is gone, so the advert must go with it.
         runCatching { transport.stopPositioningBeacon() }

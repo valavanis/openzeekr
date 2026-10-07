@@ -63,6 +63,7 @@ class ProximityService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Logx.d("svc", "service start (action=${intent?.action ?: "none"}, flags=$flags)")
         startInForeground()
         val deps = (application as? DepsHolder)?.deps ?: return START_STICKY
 

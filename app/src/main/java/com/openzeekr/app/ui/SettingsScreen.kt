@@ -231,6 +231,9 @@ fun SettingsScreen(deps: Deps, modifier: Modifier = Modifier) {
             }
         }
 
+        // -------- diagnostics (persistent recording to share when something goes wrong at the car) --------
+        DiagnosticsCard(deps)
+
         if (!baked) {
             SecretsSection(cfg, { upd -> cfg = upd(cfg) }) {
                 store.replace(cfg)
@@ -523,10 +526,10 @@ private fun InfoRow(label: String, value: String) {
 }
 
 @Composable
-private fun CardTitle(text: String) = Text(text, fontWeight = FontWeight.Bold, fontSize = 15.sp, modifier = Modifier.padding(bottom = 2.dp))
+internal fun CardTitle(text: String) = Text(text, fontWeight = FontWeight.Bold, fontSize = 15.sp, modifier = Modifier.padding(bottom = 2.dp))
 
 @Composable
-private fun SettingsCard(content: @Composable () -> Unit) {
+internal fun SettingsCard(content: @Composable () -> Unit) {
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surface).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),

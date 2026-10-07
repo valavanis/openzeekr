@@ -47,6 +47,21 @@ object Logx {
      *  "dkframe" (DK frame plaintext) belongs here too, so HTTP-only logging never dumps BLE frames. */
     private val BLE_TAGS = setOf("ble", "carprox", "dk", "dkframe", "lock", "motion", "provision", "prox", "svc", "ctl")
 
+    /** Areas the persistent diagnostic recorder keeps: the key / proximity trail plus session events.
+     *  Never the HTTP category (request bodies, tokens). */
+    private val RECORD_AREAS = BLE_TAGS + setOf("diag", "session")
+
+    /**
+     * Persistent diagnostic recorder ([DiagRecorder]): receives every line of the [RECORD_AREAS] as
+     * (epoch ms, level, area, message), whatever the on-screen logging switches say. Null = off.
+     */
+    @Volatile var recorder: ((Long, Char, String, String) -> Unit)? = null
+
+    private fun record(level: Char, area: String, msg: String) {
+        val r = recorder ?: return
+        if (area in RECORD_AREAS) runCatching { r(System.currentTimeMillis(), level, area, msg) }
+    }
+
     /** HTTP-category gate, driven by the Settings "HTTP logging" switch; off by default until
      *  config is applied. When OFF, verbose [d] for HTTP areas is suppressed from BOTH logcat and
      *  the ring buffer, so no request bodies/tokens/VIN reach the log. */
@@ -74,6 +89,7 @@ object Logx {
     /** Verbose. Fully gated on the area's category - nothing (not even logcat) unless that
      *  category is ON. An unknown/general area logs if EITHER category is on. */
     fun d(area: String, msg: String) {
+        record('D', area, msg)
         val on = when {
             area in HTTP_TAGS -> httpOn
             area in BLE_TAGS -> bleOn
@@ -83,9 +99,13 @@ object Logx {
         emit('D', area, msg); Log.d(TAG, "[$area] $msg")
     }
     /** Warning - always to logcat (low-volume, no HTTP bodies); buffered only when a category is ON. */
-    fun w(area: String, msg: String) = emit('W', area, msg).also { Log.w(TAG, "[$area] $msg") }
+    fun w(area: String, msg: String) {
+        record('W', area, msg)
+        emit('W', area, msg); Log.w(TAG, "[$area] $msg")
+    }
     /** Error - always to logcat; buffered only when a category is ON. */
     fun e(area: String, msg: String, t: Throwable? = null) {
+        record('E', area, msg + (t?.let { " :: ${it.javaClass.simpleName}: ${it.message}" } ?: ""))
         emit('E', area, msg + (t?.let { " :: ${it.javaClass.simpleName}: ${it.message}" } ?: ""))
         Log.e(TAG, "[$area] $msg", t)
     }

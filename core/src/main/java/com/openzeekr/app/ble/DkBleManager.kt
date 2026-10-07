@@ -114,6 +114,8 @@ class DkBleManager(base: Context) : DkTransport {
             else
                 appContext.registerReceiver(btStateReceiver, filter)
         }.onFailure { Logx.w("ble", "bt state receiver register failed: ${it.message}") }
+        // One line per link state change: the backbone of a diagnostic timeline (scan -> connect -> ready).
+        scope.launch { _state.collect { Logx.d("ble", "state -> $it") } }
     }
 
     // Wear OS BLE: Samsung's watch stack advertises hardware scan-batching as supported but often
