@@ -45,7 +45,11 @@ object PhoneKeyPush {
      */
     fun publishKeyState(context: Context) {
         val ctx = context.applicationContext
-        val dkId = runCatching { DkIdentity.get(ctx).credential()?.dkId }.getOrNull().orEmpty()
+        val id = DkIdentity.get(ctx)
+        // "" (no key) ONLY when the phone really has none: a failed read of a key that exists must not
+        // tell the watch to wipe its valid copy.
+        val dkId = if (!id.isProvisioned) "" else runCatching { id.credential()?.dkId }.getOrNull()
+            ?: run { Log.w(TAG, "key state not published: couldn't read the current key"); return }
         val req = PutDataMapRequest.create(WearKeyProtocol.PATH_KEY_STATE).apply {
             dataMap.putString(WearKeyProtocol.KEY_STATE_DKID, dkId)
             dataMap.putLong("ts", System.currentTimeMillis()) // always a change, so it always syncs
@@ -57,10 +61,10 @@ object PhoneKeyPush {
 
     fun pushToWatches(context: Context) {
         val ctx = context.applicationContext
-        publishKeyState(ctx)
         val blob = DkIdentity.get(ctx).exportCredentialBlob() ?: run {
             Log.i(TAG, "push skipped — phone not provisioned yet"); return
         }
+        publishKeyState(ctx)
         val json = Json.encodeToString(blob).toByteArray(Charsets.UTF_8)
         Wearable.getNodeClient(ctx).connectedNodes
             .addOnSuccessListener { nodes ->

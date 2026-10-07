@@ -73,7 +73,7 @@ class PushRegistrar(
         try {
             withTimeoutOrNull(DISABLE_TIMEOUT_MS) {
                 val token = currentFcmToken() ?: return@withTimeoutOrNull
-                post(DISABLE_PATH, disableBody(token))
+                post(DISABLE_PATH, disableBody(token), callTimeoutMs = DISABLE_TIMEOUT_MS)
             } ?: Logx.w(TAG, "disable timed out")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -122,7 +122,9 @@ class PushRegistrar(
     private fun authToken(cfg: com.openzeekr.app.config.SecretsConfig): String =
         cfg.azureToken.ifBlank { cfg.accessToken }
 
-    private suspend fun post(path: String, bodyJson: String) = withContext(Dispatchers.IO) {
+    /** POST to the message centre. [callTimeoutMs] > 0 bounds the WHOLE call (DNS, connect, write, read):
+     *  the request is a blocking execute(), which coroutine timeouts cannot interrupt. */
+    private suspend fun post(path: String, bodyJson: String, callTimeoutMs: Long = 0) = withContext(Dispatchers.IO) {
         val cfg = store.current()
         val url = "${cfg.messageCoreUrl}$path"
         val bodyBytes = bodyJson.toByteArray(Charsets.UTF_8)
@@ -167,7 +169,9 @@ class PushRegistrar(
             .apply { if (auth.isNotBlank()) header("Authorization", auth) }
             .build()
 
-        http.newCall(req).execute().use { resp ->
+        val call = http.newCall(req)
+        if (callTimeoutMs > 0) call.timeout().timeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+        call.execute().use { resp ->
             val respBody = runCatching { resp.body?.string() }.getOrNull().orEmpty()
             Logx.d(TAG, "$path -> ${resp.code} ${respBody.take(200)}")
         }

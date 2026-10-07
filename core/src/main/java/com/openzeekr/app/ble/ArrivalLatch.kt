@@ -8,11 +8,12 @@ import com.openzeekr.app.ble.ProximityController.Zone
  * re-armed only once the user has demonstrably LEFT the car.
  *
  * "Left" has three proofs, all routed to [onLeft]:
- *  - a connected RSSI reading at/below the lock threshold (clearly FAR),
+ *  - a SMOOTHED connected RSSI reading at/below the lock threshold (clearly FAR),
  *  - the link-loss walk-away lock confirmed after the drop delay (we had unlocked the car),
- *  - a walk-away lock decided on a SILENT link ([onSilentWalkAway]) whose link then stays down for the
- *    confirm delay ([onLinkDown]). A NEAR reading in between ([onNear]) means the silent read was a
- *    glitch at the car, so nothing is re-armed.
+ *  - an UNCONFIRMED walk-away lock (the unlocked idle-check: one raw reading, or none at all;
+ *    [onUnconfirmedWalkAway]) whose link then stays down for the confirm delay ([onLinkDown]). A NEAR
+ *    reading in between ([onNear]) means it was a glitch at the car, so nothing is re-armed - a single
+ *    noisy reading must not turn into lock-then-re-unlock while the user is still at the car.
  *
  * Without the third proof, the common walk-away (the link drops during the unlocked idle-wait, so the
  * idle check sees no RSSI) left the latch set forever, and the next session that came up already near
@@ -26,7 +27,7 @@ internal class ArrivalLatch {
     var acted: Boolean = false
         private set
 
-    /** A walk-away lock was decided on a silent link; becomes a departure if the link stays down. */
+    /** An unconfirmed walk-away lock was decided; becomes a departure if the link stays down. */
     var departurePending: Boolean = false
         private set
 
@@ -42,14 +43,15 @@ internal class ArrivalLatch {
     /** The user has left the car: the next NEAR is a new arrival. */
     fun onLeft() { acted = false; departurePending = false }
 
-    /** A NEAR reading: the user is at the car, so a pending silent walk-away was a glitch. */
+    /** A NEAR reading (at/above the unlock threshold): the user is at the car, so a pending walk-away
+     *  was a glitch. */
     fun onNear() { departurePending = false }
 
-    /** A walk-away lock was decided because the link went silent (no RSSI reading). */
-    fun onSilentWalkAway() { departurePending = true }
+    /** A walk-away lock was decided on weak evidence: one raw RSSI reading, or a silent link. */
+    fun onUnconfirmedWalkAway() { departurePending = true }
 
     /**
-     * The link has been down for [downMs]. Once that reaches [confirmAfterMs] a pending silent
+     * The link has been down for [downMs]. Once that reaches [confirmAfterMs] a pending unconfirmed
      * walk-away is a real departure: re-arm and return true. Otherwise (no departure pending, or a
      * short drop the keep-alive may still recover) nothing changes.
      */

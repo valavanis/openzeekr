@@ -38,3 +38,7 @@ keystore.properties
 
 # Watch hero car cutout (copyrighted render, supply locally)
 /wear/src/main/assets/cars/
+
+# Python bytecode (e.g. from running scripts/decrypt_log.py)
+__pycache__/
+*.pyc

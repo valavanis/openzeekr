@@ -98,6 +98,7 @@ interface TspApi {
     suspend fun ecarxControl(
         @Path("vin") vin: String,
         @Body body: com.openzeekr.app.net.model.EcarxControlRequest,
+        @Header(TARGET_VIN_HEADER) targetVin: String? = null,
     ): com.openzeekr.app.net.model.EcarxControlResponse
 
     // ---- per-VIN supported functions (drive button visibility) ----

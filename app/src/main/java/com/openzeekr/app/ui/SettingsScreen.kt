@@ -321,7 +321,9 @@ fun SettingsScreen(deps: Deps, modifier: Modifier = Modifier) {
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
                     confirmSignOut = false
-                    scope.launch {
+                    // App scope, NOT this screen's: removing the key flips AppRoot to the Key tab, which
+                    // disposes this screen and would cancel the sign-out half-way (key gone, account kept).
+                    deps.appScope.launch {
                         // Revoke + wipe the DK (cloud remove + local wipe + purge watch), then the account.
                         runCatching { deps.provisioning.removeKey() }
                         runCatching { com.openzeekr.app.wear.PhoneKeyPush.purgeWatches(ctx) }

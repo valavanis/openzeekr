@@ -151,7 +151,7 @@ class DkBleManager(base: Context) : DkTransport {
 
     /** VIN of the car the loaded key opens, or null without a key. The BLE session always talks to it,
      *  whichever car is active in the cloud UI. */
-    val credentialVin: String? get() = credential?.vin
+    val credentialVin: String? get() = credential?.vin?.takeIf { it.isNotBlank() }
 
     // ---- live RSSI of the connected car (for the RPA proximity gate) ----
     @Volatile private var lastRemoteRssi: Int? = null
@@ -389,6 +389,7 @@ class DkBleManager(base: Context) : DkTransport {
         seenAdvertisers.clear()
         rndByMac.clear()
         advBroadcastRnd = null
+        heldCandidate = null
         // No device ScanFilter on the foreground connect: the car doesn't advertise the DK
         // service UUID and its name format can vary, so filtering risks missing it — matching
         // in-callback is faster/more reliable. To avoid the per-packet log firehose (the
@@ -455,13 +456,23 @@ class DkBleManager(base: Context) : DkTransport {
                     Logx.d("ble", "matched $why $addr but no broadcastRnd yet - waiting for the DK mfr-data advert…")
                     return false
                 }
-                advBroadcastRnd = rnd
-                lastDevice = dev; lastRnd = rnd   // cache for a scan-free forced reconnect
-                Logx.d("ble", "match by $why rnd=${rnd.joinToString("") { "%02x".format(it) }} -> connecting $addr")
-                stopScanInternal(scanner)
-                _state.value = State.CONNECTING
-                connectDevice(dev)
-                return true
+                // Prefer the car we last connected to. Another Zeekr parked nearby can be the first advert
+                // (and the presence wake may have been ITS advert), so hold a different candidate briefly
+                // in case our cached address is advertising too; after a rotation it never shows, and the
+                // held candidate is taken. Without a cached device, connect straight away as before.
+                val cached = lastDevice?.address
+                if (cached != null && !addr.equals(cached, ignoreCase = true)) {
+                    if (heldCandidate == null) {
+                        heldCandidate = Triple(dev, rnd, why)
+                        Logx.d("ble", "candidate $addr ($why) is not the cached $cached - holding ${CACHED_PREFERENCE_MS}ms")
+                        scope.launch {
+                            delay(CACHED_PREFERENCE_MS)
+                            heldCandidate?.let { (d, r, w) -> commitScanMatch(scanner, d, r, "$w (held)") }
+                        }
+                    }
+                    return false
+                }
+                return commitScanMatch(scanner, dev, rnd, why)
             }
             return false
         }
@@ -499,6 +510,29 @@ class DkBleManager(base: Context) : DkTransport {
             }
         }
     }
+
+    /** First scan candidate that wasn't the cached car, held for [CACHED_PREFERENCE_MS] (device, rnd, why). */
+    @Volatile private var heldCandidate: Triple<BluetoothDevice, ByteArray, String>? = null
+
+    /** Connect to a scan match, once: the scan callback and the held-candidate timer can race. */
+    @SuppressLint("MissingPermission")
+    private fun commitScanMatch(
+        scanner: android.bluetooth.le.BluetoothLeScanner,
+        dev: BluetoothDevice,
+        rnd: ByteArray,
+        why: String,
+    ): Boolean = synchronized(scanCommitLock) {
+        if (_state.value != State.SCANNING) return true
+        heldCandidate = null
+        advBroadcastRnd = rnd
+        lastDevice = dev; lastRnd = rnd   // cache for a scan-free forced reconnect
+        Logx.d("ble", "match by $why rnd=${rnd.joinToString("") { "%02x".format(it) }} -> connecting ${dev.address}")
+        stopScanInternal(scanner)
+        _state.value = State.CONNECTING
+        connectDevice(dev)
+        true
+    }
+    private val scanCommitLock = Any()
 
     /**
      * Extract the 8-byte broadcast-random from a raw BLE advertisement, matching
@@ -742,7 +776,7 @@ class DkBleManager(base: Context) : DkTransport {
                         Logx.w("ble", "connect timed out (status=$status) — re-scan for the car's current address #$setupRetries/$MAX_SETUP_RETRIES")
                         scope.launch { delay(SETUP_RETRY_DELAY_MS); connect(null, filtered = true) }
                     }
-                    DropRecovery.FAIL -> { setupRetries = 0; fail("disconnected (status=$status)") }
+                    DropRecovery.FAIL -> fail("disconnected (status=$status)")
                 }
             }
         }
@@ -842,11 +876,11 @@ class DkBleManager(base: Context) : DkTransport {
             val ownLink = gatt === g
             failAndClose(g, "DK handshake: ${e.message}")
             // We closed the link ourselves, so no DISCONNECTED callback follows - and with it the fast setup
-            // retry that used to run once the car dropped a failed link. Keep that quick retry on the same
-            // car, within the setup-retry budget and never while backing off.
-            if (ownLink && handshakeBackoffUntilMs <= System.currentTimeMillis() && setupRetries < MAX_SETUP_RETRIES) {
-                setupRetries++
-                Logx.w("ble", "handshake failed — fast reconnectLast retry #$setupRetries/$MAX_SETUP_RETRIES")
+            // retry that used to run once the car dropped a failed link. Keep that one quick retry on the same
+            // car, never while backing off: the backoff above (HANDSHAKE_FAIL_THRESHOLD consecutive failures)
+            // is what bounds these retries.
+            if (ownLink && handshakeBackoffUntilMs <= System.currentTimeMillis()) {
+                Logx.w("ble", "handshake failed (${handshakeFailStreak}x) — fast reconnectLast retry")
                 scope.launch { delay(SETUP_RETRY_DELAY_MS); reconnectLast() }
             }
         }
@@ -1055,7 +1089,8 @@ class DkBleManager(base: Context) : DkTransport {
 
     override fun close() { stopPositioningBeacon(); inboundHandler = null }
 
-    private fun fail(msg: String) { lastError = msg; Logx.e("ble", msg); _state.value = State.ERROR }
+    /** Enter ERROR. That ends the connect episode, so the fast setup-retry budget starts over next time. */
+    private fun fail(msg: String) { lastError = msg; Logx.e("ble", msg); setupRetries = 0; _state.value = State.ERROR }
 
     companion object {
         private const val TAG = "DkBleManager"
@@ -1092,6 +1127,8 @@ class DkBleManager(base: Context) : DkTransport {
         // A connect still pending after this long ran into the stack's connect timeout (~20-30 s): the
         // address never answered. Far above an immediate status-133 failure, far below the timeout.
         private const val DEAD_ADDRESS_MS = 10_000L
+        // How long a scan holds a candidate that isn't the cached car, in case the cached address shows up.
+        private const val CACHED_PREFERENCE_MS = 1_500L
         // Auto-reconnect backoff after repeated DK-handshake failures (car won't complete the handshake).
         private const val HANDSHAKE_FAIL_THRESHOLD = 3
         private const val HANDSHAKE_BACKOFF_BASE_MS = 30_000L

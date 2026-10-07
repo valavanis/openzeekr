@@ -103,7 +103,7 @@ class RemoteControlRepository(private val store: ConfigStore, private val client
                     resp.data ?: RemoteControlResponse(serviceId = cmd.serviceId, status = "ok")
                 } else if (cmd.usesSystemB) {
                     // Flat body, PUT /remote-control/vehicle/telematics/{vin}, ecarx success sentinel.
-                    val resp = client.api.ecarxControl(targetVin, cmd.toEcarxRequest(cfg.userId, extraParams))
+                    val resp = client.api.ecarxControl(targetVin, cmd.toEcarxRequest(cfg.userId, extraParams), vin)
                     if (!resp.ok) error(resp.message ?: "command failed (code=${resp.code})")
                     resp.data ?: RemoteControlResponse(serviceId = cmd.serviceId, status = "ok")
                 } else {

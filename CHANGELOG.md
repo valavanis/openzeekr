@@ -20,6 +20,16 @@ clean-room app and is not affiliated with Zeekr.
   next attempt can start instead of waiting for the car to drop it.
 - **Unlock tapped while the key is connecting** now waits a few seconds for the key instead of going
   straight to the slower cloud command.
+- **Crash when sending a place to the car** from a map pin or "Navigate with" (geo: links), and a crash
+  (on every launch) after clearing the gateway field in Settings.
+- **Remove key** now really stops the key on this phone, and a watch that was off or out of range drops
+  its copy as soon as it reconnects. The digital key no longer appears in debug logs.
+- **Sign out** now finishes even though it switches tabs, clears every session token, and unregisters
+  car alerts for the account.
+- **Lock state** shows "—" when unknown instead of "Locked".
+- **Switching cars**: schedules, security, location and updates now follow the selected car, and the
+  key only acts over Bluetooth on the car it belongs to.
+- **Watch on Wear OS 3** can find the car again.
 
 ## [0.2] - 2026-10-02
 

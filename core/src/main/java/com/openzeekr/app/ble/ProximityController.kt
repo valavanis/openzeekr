@@ -259,11 +259,11 @@ class ProximityController(
             Logx.d("prox", "walk-away confirmed (link down ${LINK_LOSS_LOCK_DELAY_MS}ms) -> lock")
             startLockLoop("walk-away-lock (link down)")
         }
-        // The idle-watch already locked on a SILENT link (armedWatch cleared armedUnlocked itself, so the
+        // The idle-watch already locked on weak evidence (armedWatch cleared armedUnlocked itself, so the
         // walk-away branch above can't run). A link that stays down confirms the departure: re-arm the
         // arrival, or the next session that comes up already near the car would never unlock.
         if (linkLostAtMs != 0L && arrival.onLinkDown(now - linkLostAtMs, LINK_LOSS_LOCK_DELAY_MS)) {
-            Logx.d("prox", "silent walk-away confirmed (link down ${LINK_LOSS_LOCK_DELAY_MS}ms) -> next approach re-armed")
+            Logx.d("prox", "idle walk-away confirmed (link down ${LINK_LOSS_LOCK_DELAY_MS}ms) -> next approach re-armed")
         }
         // No live session: never sleep-until-motion here (the sensor can't feed us RSSI). Hold the CPU
         // while a walk-away lock is pending OR while you're MOVING — a drop while walking up needs the CPU
@@ -297,9 +297,10 @@ class ProximityController(
             if (rssi == null || rssi <= store.current().sensitivityLockRssi) {
                 Logx.d("prox", "armed idle safety-check rssi=$rssi -> far, locking")
                 armedUnlocked = false
-                // This IS a walk-away decision, so the arrival latch must follow it: a real FAR reading
-                // re-arms now; a silent link re-arms once the drop is confirmed (onSessionDown).
-                if (rssi != null) arrival.onLeft() else arrival.onSilentWalkAway()
+                // A walk-away decision on weak evidence (ONE raw reading, or none): re-arm the arrival only
+                // once it is confirmed - the link staying down (onSessionDown) or a smoothed FAR sample. A
+                // noisy reading at the car must not become lock-then-re-unlock.
+                arrival.onUnconfirmedWalkAway()
                 startLockLoop("idle-far-lock")
             }
             return
@@ -345,8 +346,9 @@ class ProximityController(
         )
         // Feed the arrival latch BEFORE the cooldown / not-ready early returns below: a reading is a reading
         // even mid-handshake, and a FAR one seen while the session comes up must still re-arm the arrival.
-        if (smoothed <= lockThresh) arrival.onLeft()      // clearly FAR: the next NEAR is a new arrival
-        else if (zone == Zone.NEAR) arrival.onNear()      // at the car: a pending silent walk-away was a glitch
+        // (onNear on the reading itself, not on `zone`: hysteresis keeps zone NEAR through the band.)
+        if (smoothed <= lockThresh) arrival.onLeft()             // clearly FAR: the next NEAR is a new arrival
+        else if (smoothed >= unlockThresh) arrival.onNear()      // at the car: a pending walk-away was a glitch
 
         val now = System.currentTimeMillis()
 
