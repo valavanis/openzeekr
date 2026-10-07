@@ -56,9 +56,12 @@ object PhoneKeyPush {
             dataMap.putString(WearKeyProtocol.KEY_STATE_DKID, dkId)
             dataMap.putLong("ts", System.currentTimeMillis()) // always a change, so it always syncs
         }.asPutDataRequest().setUrgent()
-        Wearable.getDataClient(ctx).putDataItem(req)
-            .addOnSuccessListener { Log.i(TAG, "key state published (${if (dkId.isEmpty()) "no key" else "key"})") }
-            .addOnFailureListener { e -> Log.w(TAG, "key state publish failed", e) }
+        // Runs on every app open now: never let a phone without (working) Play Services crash on it.
+        runCatching {
+            Wearable.getDataClient(ctx).putDataItem(req)
+                .addOnSuccessListener { Log.i(TAG, "key state published (${if (dkId.isEmpty()) "no key" else "key"})") }
+                .addOnFailureListener { e -> Log.w(TAG, "key state publish failed", e) }
+        }.onFailure { Log.w(TAG, "key state publish unavailable", it) }
     }
 
     fun pushToWatches(context: Context) {
