@@ -5,6 +5,7 @@ import com.openzeekr.app.util.NativeSecrets
 import com.openzeekr.core.BuildConfig
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
  * All runtime configuration for the app.
@@ -270,6 +271,13 @@ data class SecretsConfig(
      * `gateway-pub-hw-em-sg.zeekrlife.com/zeekr-cuc-idaas-sea/auth/checkUserV2`). Using the EU segment
      * on SEA 404s the whole login at step 1. LA/ME segments are unverified - default to the EU form.
      */
+    /**
+     * TSP gateway as a Retrofit base (trailing slash). Falls back to this region's default gateway when
+     * [baseUrl] isn't a valid http(s) URL - e.g. the Settings field mid-edit. Retrofit.baseUrl throws on
+     * an invalid URL, which crashed the app and, the value being persisted, every launch after it.
+     */
+    val tspBase: String get() = tspBaseOrDefault(baseUrl, com.openzeekr.app.net.Region.byCode(regionCode).tspBaseUrl)
+
     val usercenterUrl: String get() {
         val seg = if (regionCode.equals("SEA", ignoreCase = true)) "zeekr-cuc-idaas-sea" else "zeekr-cuc-idaas"
         return "$azureBase/$seg/"
@@ -337,6 +345,12 @@ data class SecretsConfig(
     val sensitivityLockRssi: Int get() = sensitivityUnlockRssi - LOCK_RSSI_GAP_DB
 
     companion object {
+        /** [configured] normalised to one trailing slash if it's a valid http(s) URL, else [fallback]. */
+        internal fun tspBaseOrDefault(configured: String, fallback: String): String {
+            val base = configured.trim().trimEnd('/') + "/"
+            return if (base.toHttpUrlOrNull() != null) base else fallback.trim().trimEnd('/') + "/"
+        }
+
         /** Unlock can never be set weaker (more negative) than this — safety floor. */
         const val UNLOCK_RSSI_FLOOR = -65
         /** Lock threshold sits this many dB weaker (farther) than unlock - the single hysteresis gap used

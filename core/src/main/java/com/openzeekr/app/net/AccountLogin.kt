@@ -106,7 +106,7 @@ class AccountLogin(private val store: ConfigStore) {
             require(cfg.hmacAccessKey.isNotBlank() && cfg.hmacSecretKey.isNotBlank()) { "hmac keys not set" }
             require(cfg.prodSecret.isNotBlank()) { "prod_secret not set" }
             val uc = cfg.usercenterUrl
-            val tsp = cfg.baseUrl.trimEnd('/') + "/"
+            val tsp = cfg.tspBase
 
             // 1. check user exists (CANARY: validates the user-center HMAC before
             //    any password is ever submitted, so a transport bug can't cause a
@@ -333,7 +333,7 @@ class AccountLogin(private val store: ConfigStore) {
      */
     suspend fun heartbeat(): Unit = withContext(Dispatchers.IO) {
         val cfg = store.current()
-        val tsp = cfg.baseUrl.trimEnd('/') + "/"
+        val tsp = cfg.tspBase
         val body = buildJsonObject {
             put("deviceId", cfg.appInstanceId); put("deviceType", 1)
             put("hbType", 3); put("ts", System.currentTimeMillis())

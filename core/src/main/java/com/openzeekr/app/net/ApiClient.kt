@@ -52,7 +52,7 @@ class ApiClient private constructor(private val store: ConfigStore) {
             .addInterceptor(logging)
             .build()
 
-        val base = store.current().baseUrl.trimEnd('/') + "/"
+        val base = store.current().tspBase
         return Retrofit.Builder()
             .baseUrl(base)
             .client(ok)

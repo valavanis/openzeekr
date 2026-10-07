@@ -32,7 +32,12 @@ class SendToCarActivity : Activity() {
         // Parse first, then ALWAYS ask for confirmation before pushing anything to the car — this
         // activity is exported, so without a prompt any app could fire a POI at the car silently.
         deps.appScope.launch {
-            val dest = withContext(Dispatchers.IO) { parseDestination(intent) }
+            // Never let a malformed share take the process (and the BLE key service) down with it.
+            val dest = withContext(Dispatchers.IO) {
+                runCatching { parseDestination(intent) }
+                    .onFailure { Logx.w("sendToCar", "parse failed: ${it.message}") }
+                    .getOrNull()
+            }
             withContext(Dispatchers.Main) {
                 if (dest == null) {
                     val preview = (intent.getStringExtra(Intent.EXTRA_TEXT) ?: intent.dataString ?: "").take(48)
@@ -74,11 +79,9 @@ class SendToCarActivity : Activity() {
         // the shared EXTRA_TEXT, the EXTRA_SUBJECT (often the place name), and ClipData items — some
         // Maps/share flows put the payload in ClipData, not EXTRA_TEXT.
         val blobs = buildList {
-            intent.data?.let { uri ->
-                uri.getQueryParameter("q")?.let { add(it) }
-                uri.getQueryParameter("destination")?.let { add(it) }
-                add(uri.schemeSpecificPart ?: uri.toString())
-            }
+            // Parsed from the raw string: geo:/google.navigation: are opaque URIs, on which
+            // Uri.getQueryParameter throws (see SendToCarParsing).
+            intent.dataString?.let { addAll(SendToCarParsing.uriCandidates(it)) }
             intent.dataString?.let { add(it) }
             intent.getStringExtra(Intent.EXTRA_TEXT)?.let { add(it) }
             intent.getStringExtra(Intent.EXTRA_SUBJECT)?.let { add(it) }

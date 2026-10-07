@@ -72,7 +72,7 @@ class DkProvisioning(
             .addInterceptor(httpLog)
             .build()
         Retrofit.Builder()
-            .baseUrl(store.current().baseUrl.trimEnd('/') + "/")
+            .baseUrl(store.current().tspBase)
             .client(ok)
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build().create(DkApi::class.java)

@@ -97,6 +97,9 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // Offline JVM unit tests (pure parsing helpers).
+    testImplementation("junit:junit:4.13.2")
+
     // Map (free, no API key): MapLibre GL + OpenFreeMap tiles. Used for the parked-car
     // location; turn-by-turn navigation is handed off to the phone's nav app via deeplink.
     implementation("org.maplibre.gl:android-sdk:11.13.5")
