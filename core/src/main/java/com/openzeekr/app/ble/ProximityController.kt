@@ -22,8 +22,9 @@ import kotlin.math.pow
  * Decision model (the tuning the user asked for):
  *  - **Latch**: once we auto-unlock we set [armedUnlocked] and won't unlock again until a lock
  *    happens — so no repeated unlock spam while you stand at the car.
- *  - **Trend**: unlock only while *approaching* (RSSI rising), lock only while *receding* — a flat
- *    signal (you're parked next to it, or the app just launched at the car) does nothing.
+ *  - **Approach**: unlock only with evidence you walked up — the phone moved recently, or (no motion
+ *    sensor) a FAR→NEAR crossing was observed ([ApproachMotionGate]). A phone at rest next to the car
+ *    (e.g. the service restarted overnight with the car in the garage) does nothing.
  *  - **Hysteresis**: unlock at/above [ConfigStore.sensitivityUnlockRssi] (≈ near), lock at/below
  *    [ConfigStore.sensitivityLockRssi] (≈ farther). The gap between them stops flapping.
  *  - **Cooldown**: after any action, ignore new triggers for [ACTION_COOLDOWN_MS].
@@ -445,7 +446,12 @@ class ProximityController(
         // a walk-away lock loop is still running: the two loops would fight over the link.
         if (!armedUnlocked && !needToUnlock && smoothed >= unlockThresh) {
             val lockRunning = lockJob?.isActive == true
-            if (!lockRunning && arrival.mayFire(prevZone)) {
+            // Strong signal alone isn't an approach (e.g. the service restarted next to the car at night).
+            val approaching = ApproachMotionGate.mayUnlock(
+                hasSource = motion.hasSource, movingNow = motion.state.value == MotionMonitor.Motion.MOVING,
+                lastMovingAtMs = motion.lastMovingAtMs, nowMs = now, prevZone = prevZone,
+            )
+            if (!lockRunning && approaching && arrival.mayFire(prevZone)) {
                 arrival.onFired()
                 needToUnlock = true
                 Logx.d("prox", "approach-unlock ARM (rssi=$smoothed ~${"%.1f".format(dist)}m prevZone=$prevZone) — confirmed-unlock loop")
@@ -454,8 +460,12 @@ class ProximityController(
             }
             if (now - lastHeldLogMs >= HELD_LOG_INTERVAL_MS) {
                 lastHeldLogMs = now
-                Logx.d("prox", "approach-unlock held (rssi=$smoothed prevZone=$prevZone): " +
-                    if (lockRunning) "a walk-away lock is still running" else "already fired this visit — re-arms once you are clearly away")
+                Logx.d("prox", "approach-unlock held (rssi=$smoothed prevZone=$prevZone): " + when {
+                    lockRunning -> "a walk-away lock is still running"
+                    !approaching -> "no approach - the phone hasn't moved recently" +
+                        if (motion.hasSource) "" else " (no motion sensor: needs a FAR -> NEAR crossing)"
+                    else -> "already fired this visit — re-arms once you are clearly away"
+                })
             }
         }
         // WALK-AWAY cancels a pending unlock loop — only once we cross to FAR (≤ lockThresh). The NEAR/FAR
